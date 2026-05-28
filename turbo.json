@@ -1,0 +1,21 @@
+{
+    "$schema": "https://turbo.build/schema.json",
+    "ui": "tui",
+    "tasks": {
+        "build": {
+            "dependsOn": ["^build"],
+            "outputs": ["dist/**"]
+        },
+        "lint": {
+            "dependsOn": ["^lint"],
+            "env": ["MAYA_RPC"]
+        },
+        "typecheck": {
+            "dependsOn": ["^typecheck"]
+        },
+        "test": {
+            "dependsOn": ["^build"],
+            "outputs": []
+        }
+    }
+}

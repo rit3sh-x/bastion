@@ -1,0 +1,16 @@
+packages:
+    - "packages/*"
+    - "tooling/*"
+    - "examples/*"
+
+allowBuilds:
+    bufferutil: false
+    esbuild: true
+    utf-8-validate: false
+
+ignoredBuiltDependencies:
+    - bufferutil
+    - utf-8-validate
+
+onlyBuiltDependencies:
+    - esbuild

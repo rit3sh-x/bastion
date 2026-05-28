@@ -1,0 +1,24 @@
+{
+    "name": "bastion",
+    "version": "0.0.1",
+    "private": true,
+    "scripts": {
+        "build": "turbo build",
+        "dev": "turbo dev",
+        "lint": "turbo lint",
+        "typecheck": "turbo typecheck",
+        "test": "turbo test",
+        "codegen": "pnpm -F types codegen",
+        "format": "prettier --write .",
+        "postinstall": "pnpm codegen"
+    },
+    "devDependencies": {
+        "@types/node": "^25.9.1",
+        "@workspace/eslint-config": "workspace:*",
+        "@workspace/typescript-config": "workspace:*",
+        "prettier": "^3.8.0",
+        "turbo": "^2.9.10",
+        "typescript": "^6.0.0"
+    },
+    "packageManager": "pnpm@11.2.2"
+}

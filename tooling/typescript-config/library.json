@@ -1,0 +1,13 @@
+{
+    "$schema": "https://json.schemastore.org/tsconfig",
+    "display": "Library",
+    "extends": "./base.json",
+    "compilerOptions": {
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true,
+        "composite": false,
+        "noImplicitOverride": true,
+        "exactOptionalPropertyTypes": true
+    }
+}
