@@ -1,0 +1,18 @@
+cognitive-complexity-threshold = 25
+
+too-many-lines-threshold = 120
+
+doc-valid-idents = [
+    "Anchor",
+    "Borsh",
+    "CPI",
+    "LiteSVM",
+    "Metaplex",
+    "Pubkey",
+    "PDA",
+    "SOL",
+    "SPL",
+    "SVM",
+    "Solana",
+    "WrappedInstruction",
+]
