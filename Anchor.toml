@@ -7,7 +7,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-bastion = "F65z2vfLBdrVP9NkShpQJaS6aVznNP3idxVR9b7kVBYR"
+bastion = "GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1"
 
 [provider]
 cluster = "localnet"
@@ -15,3 +15,5 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 testsvm = "cargo test"
+
+[hooks]
