@@ -12,6 +12,10 @@ pub const SEED_POLICY: &[u8] = b"policy";
 #[constant]
 pub const SEED_DELEGATE: &[u8] = b"delegate";
 
+/// PDA seed for metadata address.
+#[constant]
+pub const METADATA_SEED: &[u8] = b"metadata";
+
 // Not `#[constant]` since Anchor IDL does not support `usize`.
 pub const MAX_POLICIES_PER_EXECUTE: usize = 16;
 pub const MAX_PROGRAMS_PER_LIST: usize = 32;

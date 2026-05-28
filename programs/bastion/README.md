@@ -1,254 +1,272 @@
-# Bastion
+# `bastion` — on-chain program
 
-Programmable policy runtime for Solana session keys.
+The Anchor program that enforces every policy at runtime. This README covers the program's architecture; for the whole-project pitch see the root [README](../../README.md).
 
-The Bastion on-chain program lets wallets delegate constrained authority to
-session keys through composable policy accounts enforced at runtime.
----
-
-# High-level Architecture
-
-```mermaid
-flowchart LR
-    Owner[Wallet Owner]
-    SessionKey[Session Key]
-
-    Session["Session PDA\nseeds:\n['session', owner, session_key]"]
-
-    Delegate["Delegate PDA\nseeds:\n['delegate', owner, session_key]"]
-
-    Policy1["Policy PDA #0"]
-    Policy2["Policy PDA #1"]
-    PolicyN["Policy PDA #N"]
-
-    Owner --> Session
-    Owner --> Delegate
-
-    Session --> Policy1
-    Session --> Policy2
-    Session --> PolicyN
-
-    SessionKey -->|signs execute| Session
-    Delegate -->|invoke_signed signer| CPI["Wrapped CPI"]
-```
+The program owns three account types (Session, Policy, Delegate), exposes 9 instructions, and enforces 24 policy kinds. The hot path — `execute` — runs a validate → pre-snapshot → CPI → post-charge pipeline that gates every wrapped instruction the session key tries to send.
 
 ---
 
-# Account Model
+## Account model
 
 ```mermaid
 classDiagram
     class Session {
-        Pubkey owner
-        Pubkey session_key
-        bool revoked
-        i64 expires_at
-        [32] policies_hash
-        u8 policy_count
+        +Pubkey owner
+        +Pubkey session_key
+        +u8 bump
+        +i64 created_at
+        +i64 expiry
+        +bool revoked
+        +u64 policy_count
+        +u64 next_seed
+        +[32] policies_hash
+        +u8 delegate_bump
+        +u8 version
     }
 
     class Policy {
-        Pubkey session
-        u8 seed
-        PolicyKind kind
-        bytes data
+        +Pubkey session
+        +u64 seed
+        +u8 bump
+        +u8 kind
+        +bool enabled
+        +i64 created_at
+        +PolicyData data
     }
 
     class Delegate {
-        lamports
-        SPL approvals
+        +SystemAccount
+        +lamports for SOL spend
+        +signs via PDA seeds
     }
 
-    Session --> Policy
-    Session --> Delegate
+    Session "1" --> "0..N" Policy : policies_hash anchors set
+    Session "1" --> "1" Delegate : delegate_bump cached
 ```
+
+PDA seeds:
+
+| Account | Seeds |
+|---|---|
+| **Session** | `["session", owner, session_key]` |
+| **Policy** | `["policy", session, seed_le_u64]` (seed = `Session.next_seed` at attach time) |
+| **Delegate** | `["delegate", owner, session_key]` (bump cached on Session) |
+
+`Session.policies_hash` is a blake3 commitment over the sorted set of child Policy keys. `execute` rejects any caller that doesn't pass the exact set, in any order, that hashes to this commitment. That defends against an old / forged / partial policy set being substituted at call time.
 
 ---
 
-# Execute Flow
+## Instructions
 
-`execute(wrapped_ix)` is the hot path.
+| Instruction | Signer | Purpose |
+|---|---|---|
+| `init_session` | owner | Create the Session PDA. Caches `delegate_bump` at init so `execute` skips a costly canonical-bump search. |
+| `attach_policy` | owner | Append a Policy PDA at `next_seed`, re-hash, bump `policy_count`. |
+| `update_policy` | owner | Replace `policy.data` in place; kind must be preserved (reuses the allocation; reallocs for new data length). |
+| `detach_policy` | owner | Close one Policy PDA, re-hash remaining set. |
+| `revoke_session` | owner | Idempotent flip of `session.revoked = true`. Disables `execute` immediately. |
+| `extend_session` | owner | Monotonically advance `session.expiry`. Rejects on revoked / already-expired / non-monotonic. |
+| `close_session` | owner | Close Session + every child Policy in one atomic tx. Owner must pass every child in `remaining_accounts`. |
+| `sweep_delegate` | owner | Drain Delegate lamports back to owner. Requires session to be revoked first. |
+| `execute` | session_key | Wrap an inner ix through the policy pipeline and CPI it via the Delegate PDA. |
+
+---
+
+## The `execute` pipeline
+
+`execute` is the only hot path. Everything else mutates state once per owner action.
 
 ```mermaid
 sequenceDiagram
     participant SK as Session Key
-    participant B as Bastion
-    participant P as Policies
-    participant D as Delegate PDA
-    participant TP as Target Program
+    participant Ex as execute_handler
+    participant Pol as Policies
+    participant CPI as Target program
 
-    SK->>B: execute(wrapped_ix)
+    SK->>Ex: execute(wrapped_ix, policy_count)
 
-    B->>B: Validate session
-    B->>B: Check revoked / expiry
-    B->>B: Verify attached policy set hash
+    Note over Ex: validate_session
+    Ex->>Ex: !revoked, now <= expiry
 
-    loop For each policy
-        B->>P: validate()
+    Note over Ex: collect_execution_context
+    Ex->>Ex: load N policies, verify hash + count
+    Ex->>Ex: derive delegate, validate AccountInfo
+
+    Note over Ex,Pol: validate_policies (pre-CPI, stateless)
+    loop each policy
+        Ex->>Pol: data.validate(clock, wrapped_ix, ix_accts, sysvar)
     end
 
-    B->>P: Pre-charge RateLimit
-    B->>P: Snapshot SpendCap
+    Note over Ex,Pol: pre_cpi_state_updates (mutating, pre-CPI)
+    Pol->>Pol: RateLimit / Cooldown / MaxCallsTotal charge
 
-    B->>TP: invoke_signed(delegate PDA)
+    Note over Ex,Pol: pre_cpi_snapshots
+    Pol->>Pol: snapshot delegate (or receiver) balances<br/>for spend-related policies
 
-    TP-->>B: CPI result
+    Ex->>CPI: invoke_signed(wrapped_ix, delegate seeds)
+    CPI-->>Ex: ok / revert (atomic)
 
-    B->>P: Post-charge SpendCap
+    Note over Ex,Pol: post_cpi_enforcement
+    Pol->>Pol: SpendCap / AmountPerCall<br/>PerCounterpartyCap / PerProgramSpendCap
+    Pol->>Pol: MinDelegateBalance floor (stateless)
+
+    Ex-->>SK: ok / revert
 ```
 
----
+Why two phases for spend policies:
 
-# PDA Layout
+- **Pre-CPI snapshot** captures `delegate.lamports()` (or the receiver's, for `PerCounterpartyCap`) before the wrapped ix mutates anything.
+- The CPI runs through `invoke_signed` against the Delegate PDA.
+- **Post-CPI** re-reads the same balances, computes the delta, and charges the windowed counters. A negative delegate delta is an outflow that decrements SpendCap; a positive receiver delta is an inflow that decrements PerCounterpartyCap.
 
-```mermaid
-flowchart TD
-    Session["Session PDA"]
-
-    subgraph Policies[Policy PDAs]
-        P0["policy #0"]
-        P1["policy #1"]
-        P2["..."]
-    end
-
-    Delegate["Delegate PDA"]
-
-    Session --> P0
-    Session --> P1
-    Session --> P2
-
-    Session --> Delegate
-```
+This is the only way to enforce "you can spend at most X SOL per 24h" without trusting the wrapped instruction's bytes — the program parses *only* the standard ComputeBudget wire format for CU/priority-fee policies; for everything else the *effect* on accounts is what's enforced.
 
 ---
 
-# Instructions
+## Policy kinds
 
-| Instruction      | Signer      | Purpose                                           |
-| ---------------- | ----------- | ------------------------------------------------- |
-| `init_session`   | owner       | Create a Session PDA                              |
-| `attach_policy`  | owner       | Attach a new Policy PDA and re-hash session state |
-| `update_policy`  | owner       | Replace policy data (kind-preserving realloc)     |
-| `detach_policy`  | owner       | Remove Policy PDA and re-hash session             |
-| `revoke_session` | owner       | Permanently revoke a session                      |
-| `close_session`  | owner       | Close Session + child Policies                    |
-| `sweep_delegate` | owner       | Drain Delegate PDA lamports                       |
-| `execute`        | session_key | Execute wrapped CPI through policy runtime        |
-
----
-
-# Policy Runtime
+24 variants, grouped by what they constrain:
 
 ```mermaid
 flowchart LR
-    WrappedIx[Wrapped Instruction]
-    Runtime[Bastion Runtime]
+    Ix["Wrapped instruction"]
+    Ix --> Allow["Allowlists / blocklists"]
+    Ix --> Caps["Quantitative caps"]
+    Ix --> Time["Time / rate"]
+    Ix --> Shape["Instruction shape"]
+    Ix --> Side["Side conditions"]
 
-    ProgramAllow["Program Allowlist"]
-    ProgramBlock["Program Blocklist"]
+    Allow --> A1[ProgramAllowlist]
+    Allow --> A2[ProgramBlocklist]
+    Allow --> A3[MintAllowlist]
+    Allow --> A4[MintBlocklist]
+    Allow --> A5[NftCollectionAllowlist]
+    Allow --> A6[NftCollectionBlocklist]
+    Allow --> A7[NftCreatorAllowlist]
+    Allow --> A8[IxDiscriminatorAllowlist]
 
-    MintAllow["Mint Allowlist"]
-    MintBlock["Mint Blocklist"]
+    Caps --> C1[SpendCap]
+    Caps --> C2[AmountPerCall]
+    Caps --> C3[PerCounterpartyCap]
+    Caps --> C4[PerProgramSpendCap]
+    Caps --> C5[MinDelegateBalance]
+    Caps --> C6[MaxComputeUnits]
+    Caps --> C7[MaxPriorityFee]
 
-    NFTAllow["NFT Collection Allowlist"]
-    NFTBlock["NFT Collection Blocklist"]
+    Time --> T1[RateLimit]
+    Time --> T2[CooldownPeriod]
+    Time --> T3[MaxCallsTotal]
+    Time --> T4[TimeOfDayWindow]
+    Time --> T5[Expiry]
 
-    RateLimit["Rate Limit"]
-    SpendCap["Spend Cap"]
-    Expiry["Expiry"]
-    ForeignSigner["Foreign Signer Gate"]
+    Shape --> S1[MaxIxSize]
+    Shape --> S2[ForeignSignerNotAllowed]
+    Shape --> S3[NoAccountClose]
 
-    WrappedIx --> Runtime
-
-    Runtime --> ProgramAllow
-    Runtime --> ProgramBlock
-    Runtime --> MintAllow
-    Runtime --> MintBlock
-    Runtime --> NFTAllow
-    Runtime --> NFTBlock
-    Runtime --> RateLimit
-    Runtime --> SpendCap
-    Runtime --> Expiry
-    Runtime --> ForeignSigner
+    Side --> SC1[RequireMemo]
 ```
 
----
+| Variant | Asset / scope | State | Notes |
+|---|---|---|---|
+| `ProgramAllowlist` / `Blocklist` | program_id of wrapped ix | stateless | sorted at attach; binary-search at validate |
+| `MintAllowlist` / `Blocklist` | SPL/T22 token-account mint scan | stateless | scans `ix_accounts` for token accounts |
+| `NftCollectionAllowlist` / `Blocklist` | Metaplex `collection.key` | stateless | reads metadata account |
+| `NftCreatorAllowlist` | Metaplex `creators` (verified only) | stateless | rejects empty creator list at attach |
+| `IxDiscriminatorAllowlist` | first 8 data bytes, scoped to a program | stateless | sorted at attach |
+| `SpendCap` | NativeSol / SplToken / Token2022 | `SpendState` (Fixed or Rolling) | pre/post delta; enforces rent-exempt floor for NativeSol |
+| `AmountPerCall` | NativeSol / SPL | stateless | per-execute outflow cap |
+| `PerCounterpartyCap` | receiver pubkey + asset | `sent: u64` | charges *inflow at receiver*, not delegate outflow |
+| `PerProgramSpendCap` | wrapped ix's program + asset | `SpendState` (Fixed or Rolling) | out-of-scope txs are a full no-op |
+| `MinDelegateBalance` | delegate.lamports() | stateless | post-CPI floor, composes with rent-exempt min |
+| `MaxComputeUnits` | outer-tx ComputeBudget ix | stateless | requires explicit `SetComputeUnitLimit` ≤ max |
+| `MaxPriorityFee` | outer-tx ComputeBudget ix | stateless | `SetComputeUnitPrice` ≤ max (no ix → 0 → passes) |
+| `RateLimit` | call count, scope-filtered | `CounterState` (Fixed or Rolling) | charge happens pre-CPI |
+| `CooldownPeriod` | last call ts, scope-filtered | `last_call_ts: i64` | scope = optional program filter |
+| `MaxCallsTotal` | lifetime call counter | `used: u64` | `used` preserved across `update_policy` |
+| `TimeOfDayWindow` | UTC `start..end` minutes + days_mask | stateless | days mask: bit `i` = day `i` |
+| `Expiry` | wall-clock `not_after` | stateless | per-policy expiry, not session expiry |
+| `MaxIxSize` | accounts.len() + data.len() | stateless | rejects zero caps at attach |
+| `ForeignSignerNotAllowed` | inner ix's signer flags | stateless | only the delegate may be a signer in the CPI |
+| `NoAccountClose` | SPL Token CloseAccount discriminator | stateless | hard-codes SPL Token id check |
+| `RequireMemo` | outer tx must contain a memo ix | stateless | reads instructions sysvar |
 
-# Policy Kinds
+`Asset` variants: `NativeSol`, `SplToken(mint)`, `Token2022(mint)`, `NftCountInCollection(_)` *(reserved)*, `AnyNftCount` *(reserved)*. The NFT-count asset variants are rejected at attach time on caps that haven't implemented NFT counting yet.
 
-* `ProgramAllowlist`
-* `ProgramBlocklist`
-* `MintAllowlist`
-* `MintBlocklist`
-* `NftCollectionAllowlist`
-* `NftCollectionBlocklist`
-* `RateLimit`
-* `SpendCap`
-
-  * `NativeSol`
-  * `SplToken`
-  * `Token2022`
-* `Expiry`
-* `ForeignSignerNotAllowed`
-
----
-
-# Development
-
-```bash
-# Build the project
-anchor build
-
-# Run all tests
-anchor run testsvm
-
-# Run a single integration suite
-cargo test -p bastion --test test_demo_scenario
-```
-
-LiteSVM integration tests embed the generated `.so` directly via
-`include_bytes!`, so the SBF build must be rebuilt before running tests.
+`WindowKind` variants: `Fixed { secs }` (resets at the boundary) or `Rolling { secs, slots }` (sliding ring of up to 8 slots).
 
 ---
 
-# Test Architecture
+## Errors
+
+46 error variant. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
+
+| Category | Variants |
+|---|---|
+| **Session lifecycle** | `SessionRevoked`, `SessionExpired`, `SessionNotRevoked`, `NewExpiryNotGreater`, `SessionInvalidSigner` |
+| **Policy bookkeeping** | `ForeignPolicy`, `PolicyDisabled`, `PolicyHashMismatch`, `PolicyCountMismatch`, `PolicyTooMany`, `PolicyKindMismatch`, `InvalidPolicyData`, `InitialPolicyCountMismatch` |
+| **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed` |
+| **Caps & floors** | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded` |
+| **Rate / time** | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation` |
+| **Ix shape** | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh` |
+| **Token / NFT parsing** | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount` |
+| **Infra** | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong` |
+
+---
+
+## Test architecture
+
+Integration tests live in `tests/`, one file per program area. Naming convention:
+
+| Prefix | What it covers | Examples |
+|---|---|---|
+| `session_*` | Session lifecycle ops | `session_init.rs`, `session_extend.rs`, `session_close.rs`, `session_revoke.rs`, `session_sweep_delegate.rs` |
+| `policy_*` | Policy lifecycle + per-policy behavior | `policy_attach.rs`, `policy_spend_cap.rs`, `policy_rate_limit.rs`, … (one file per policy kind) |
+| `execute_*` | `execute` internals + composition | `execute_validation.rs`, `execute_dispatch.rs`, `execute_composition.rs` |
+| `e2e_*` | End-to-end flows | `e2e_demo.rs` |
+| (other) | Cross-cutting | `harness.rs`, `security_hardening.rs` |
+
+The shared LiteSVM harness, helpers, and fixtures live in `tests/helpers/mod.rs`. Every test file declares `mod helpers;` and uses central helpers (`setup_funded_session`, `extras_sol_transfer_one_policy`, `set_cu_limit_ix`, `set_cu_price_ix`).
 
 ```mermaid
-flowchart TD
-    Harness["tests/common/mod.rs\nLiteSVM harness\nPDA helpers\ntoken/NFT fixtures"]
+flowchart LR
+    Harness["tests/helpers/mod.rs<br/>LiteSVM harness + PDA helpers<br/>+ token / metadata fixtures<br/>+ shared assertions"]
 
-    Init["test_init_session.rs"]
-    Revoke["test_revoke_session.rs"]
-    Close["test_close_session.rs"]
+    Sess["session_*<br/>(5 files)"]
+    PolCrud["policy_attach<br/>policy_detach<br/>policy_update"]
+    Pol["policy_&lt;kind&gt;<br/>(19 files, 1:1 with src/policies/)"]
+    Exec["execute_*<br/>(3 files)"]
+    E2E["e2e_demo.rs"]
+    Sec["security_hardening.rs"]
 
-    Attach["test_attach_policy.rs"]
-    Detach["test_detach_policy.rs"]
-    Update["test_update_policy.rs"]
-
-    Execute["test_execute_skeleton.rs"]
-    ExecutePolicies["test_execute_policies.rs"]
-
-    Program["test_program_lists.rs"]
-    Mint["test_mint_lists.rs"]
-    NFT["test_nft_collection.rs"]
-
-    Rate["test_rate_limit.rs"]
-    Spend["test_spend_cap.rs"]
-
-    Demo["test_demo_scenario.rs"]
-
-    Harness --> Init
-    Harness --> Revoke
-    Harness --> Close
-    Harness --> Attach
-    Harness --> Detach
-    Harness --> Update
-    Harness --> Execute
-    Harness --> ExecutePolicies
-    Harness --> Program
-    Harness --> Mint
-    Harness --> NFT
-    Harness --> Rate
-    Harness --> Spend
-    Harness --> Demo
+    Harness --> Sess
+    Harness --> PolCrud
+    Harness --> Pol
+    Harness --> Exec
+    Harness --> E2E
+    Harness --> Sec
 ```
+
+---
+
+## Build & test
+
+```bash
+# build SBF .so + IDL
+anchor build
+
+# Rust unit tests (counter math, hash, wire-format parsers, …)
+cargo test --lib                        # or: anchor run testunit
+
+# Full integration suite (LiteSVM, ~120 tests across 33 files)
+cargo test --test '*'                   # or: anchor run testsvm
+
+# A single test crate
+cargo test --test policy_spend_cap
+cargo test --test session_extend
+cargo test --test execute_composition
+
+# A single test by name
+cargo test --test policy_rate_limit -- rate_limit_rolling_window
+```
+
+> LiteSVM tests embed the compiled `target/deploy/bastion.so` via `include_bytes!`, so re-run `anchor build` whenever the program source changes before running integration tests.

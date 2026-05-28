@@ -244,6 +244,8 @@ impl SpendState {
 
 #[cfg(test)]
 mod tests {
+    use crate::assert_anchor_error;
+
     use super::*;
 
     #[test]
@@ -305,12 +307,8 @@ mod tests {
         s.charge_fixed(1_000, 3, 60).unwrap();
         s.charge_fixed(1_010, 3, 60).unwrap();
         s.charge_fixed(1_020, 3, 60).unwrap();
-        let err = s.charge_fixed(1_030, 3, 60).unwrap_err();
-        let code = match err {
-            anchor_lang::error::Error::AnchorError(e) => e.error_code_number,
-            _ => panic!(),
-        };
-        assert_eq!(code, 6000 + BastionError::RateLimitExceeded as u32);
+        let res = s.charge_fixed(1_030, 3, 60);
+        assert_anchor_error(res, BastionError::RateLimitExceeded);
         // state unchanged on rejection
         assert_eq!(s.count, 3);
     }
@@ -355,12 +353,8 @@ mod tests {
             )
             .unwrap();
         }
-        let err = s.charge_rolling(1_005, 5, 60, 6).unwrap_err();
-        let code = match err {
-            anchor_lang::error::Error::AnchorError(e) => e.error_code_number,
-            _ => panic!(),
-        };
-        assert_eq!(code, 6000 + BastionError::RateLimitExceeded as u32);
+        let res = s.charge_rolling(1_005, 5, 60, 6);
+        assert_anchor_error(res, BastionError::RateLimitExceeded);
     }
 
     #[test]

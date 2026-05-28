@@ -92,7 +92,7 @@ pub fn snapshot_asset(accounts: &[AccountInfo], asset: &Asset, delegate: &Pubkey
             sum_token_balances_for(accounts, &spl_token_2022_id(), mint, delegate)
         }
         Asset::NftCountInCollection(_) | Asset::AnyNftCount => {
-            // wires these up. For v1 foundation we return 0 so the trait
+            // wires these up. For foundation we return 0 so the trait
             // surface compiles end-to-end.
             Ok(0)
         }

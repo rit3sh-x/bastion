@@ -136,4 +136,7 @@ pub enum BastionError {
 
     #[msg("Requested SetComputeUnitPrice exceeds policy maximum")]
     PriorityFeeTooHigh,
+
+    #[msg("new_expiry must be strictly greater than current session.expiry")]
+    NewExpiryNotGreater,
 }

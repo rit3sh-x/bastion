@@ -14,6 +14,7 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-testsvm = "cargo test"
+testsvm = "cargo test --test '*'"
+testunit = "cargo test --lib"
 
 [hooks]
