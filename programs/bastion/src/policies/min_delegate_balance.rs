@@ -9,9 +9,9 @@ use crate::error::BastionError;
 /// can't exist below it) whereas `MinDelegateBalance` is a *user-set* floor
 /// that reserves gas / runway for future ops.
 pub fn check_min_balance(delegate: &AccountInfo, floor: u64) -> Result<()> {
-  require!(
-    delegate.lamports() >= floor,
-    BastionError::DelegateBalanceTooLow
-  );
-  Ok(())
+    require!(
+        delegate.lamports() >= floor,
+        BastionError::DelegateBalanceTooLow
+    );
+    Ok(())
 }
