@@ -6,14 +6,14 @@ use crate::state::session::Session;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ExtendSessionArgs {
-    pub new_expiry: i64,
+  pub new_expiry: i64,
 }
 
 #[derive(Accounts)]
 pub struct ExtendSession<'info> {
-    pub owner: Signer<'info>,
+  pub owner: Signer<'info>,
 
-    #[account(
+  #[account(
         mut,
         seeds = [
             SEED_SESSION,
@@ -23,30 +23,30 @@ pub struct ExtendSession<'info> {
         bump = session.bump,
         has_one = owner,
     )]
-    pub session: Account<'info, Session>,
+  pub session: Account<'info, Session>,
 }
 
 impl<'info> ExtendSession<'info> {
-    pub fn extend_session_handler(&mut self, args: ExtendSessionArgs) -> Result<()> {
-        self.validate_extend(&args)?;
+  pub fn extend_session_handler(&mut self, args: ExtendSessionArgs) -> Result<()> {
+    self.validate_extend(&args)?;
 
-        self.session.expiry = args.new_expiry;
+    self.session.expiry = args.new_expiry;
 
-        Ok(())
-    }
+    Ok(())
+  }
 
-    fn validate_extend(&self, args: &ExtendSessionArgs) -> Result<()> {
-        require!(!self.session.revoked, BastionError::SessionRevoked);
+  fn validate_extend(&self, args: &ExtendSessionArgs) -> Result<()> {
+    require!(!self.session.revoked, BastionError::SessionRevoked);
 
-        let now = Clock::get()?.unix_timestamp;
+    let now = Clock::get()?.unix_timestamp;
 
-        require!(now <= self.session.expiry, BastionError::SessionExpired);
+    require!(now <= self.session.expiry, BastionError::SessionExpired);
 
-        require!(
-            args.new_expiry > self.session.expiry,
-            BastionError::NewExpiryNotGreater
-        );
+    require!(
+      args.new_expiry > self.session.expiry,
+      BastionError::NewExpiryNotGreater
+    );
 
-        Ok(())
-    }
+    Ok(())
+  }
 }

@@ -1,0 +1,84 @@
+language: "en-US"
+early_access: false
+tone_instructions: >-
+    Be precise and technical. Prioritize correctness, on-chain safety, and security
+    bugs over style. Cite file:line. Prefer fewer, high-confidence findings.
+
+reviews:
+    profile: "assertive"
+    request_changes_workflow: false
+    high_level_summary: true
+    review_status: true
+    poem: false
+    collapse_walkthrough: false
+    changed_files_summary: true
+    sequence_diagrams: true
+    abort_on_close: true
+
+    auto_review:
+        enabled: true
+        auto_incremental_review: true
+        drafts: false
+        base_branches:
+            - "main"
+
+    path_filters:
+        - "!**/node_modules/**"
+        - "!**/dist/**"
+        - "!**/target/**"
+        - "!sdk/src/generated/**"
+        - "!**/*.lock"
+        - "!pnpm-lock.yaml"
+        - "!**/*.so"
+        - "!examples/**"
+
+    path_instructions:
+        - path: "programs/bastion/**/*.rs"
+          instructions: >-
+              Anchor (anchor-lang 1.x) Solana program: a policy firewall that wraps and
+              re-dispatches instructions via invoke_signed. Focus on CORRECTNESS and on-chain
+              safety. Checked arithmetic only — flag any +/-/* that can overflow (the crate
+              denies arithmetic_side_effects). Verify PDA seed/bump derivation, Signer and
+              account-owner checks, and that delegate-signed CPIs pass the correct seeds to
+              invoke_signed. Only syscalls ACTIVE on the mainnet feature set may be used
+              (SHA-256 via solana_sha256_hasher — NOT the inactive blake3 syscall, which makes
+              the program fail to load). Spend is measured as the balance delta of token/SOL
+              accounts whose owner is the delegate PDA (vault) OR the session owner (allowance
+              source); flag any change that keys measurement on the volatile SPL `delegate`
+              field instead of the stable `owner` field. Treat SPEC.md §V invariants and §B
+              bug log as source of truth. Do not suggest committing.
+        - path: "sdk/src/**/*.ts"
+          instructions: >-
+              @solana/kit-native TypeScript SDK published as `bastion`. It hand-rolls System/SPL
+              instruction byte layouts to stay dependency-light — verify single-byte
+              discriminators, little-endian u64 encodings, and AccountRole flags. Invariants:
+              the delegate PDA must be a SIGNER in the wrapped compact meta but a NON-signer
+              (writable) in the OUTER tx; attach/detach MUST pass the currently-attached policy
+              accounts as remaining accounts so the program can recompute the policy-set hash;
+              amount helpers must use BigInt and never let `amount * 10**decimals` overflow 2^53.
+              The published manifest must keep @solana/kit and @solana/program-client-core as
+              PEER deps only (no workspace:* and no @workspace/* imports reach dist). Flag
+              float-precision, byte-encoding, account-role, and error-mapping bugs.
+        - path: "sdk/tests/**/*.ts"
+          instructions: >-
+              Vitest unit tests. Check that assertions actually pin the SDK's documented
+              behavior (encodings, account roles, error/code mapping) and that new code paths
+              have coverage. Flag tests that assert nothing meaningful.
+
+    tools:
+        clippy:
+            enabled: true
+        eslint:
+            enabled: true
+        gitleaks:
+            enabled: true
+        ast-grep:
+            essential_rules: true
+
+chat:
+    auto_reply: true
+
+knowledge_base:
+    opt_out: false
+    learnings:
+        scope: "auto"

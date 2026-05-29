@@ -1,0 +1,48 @@
+{
+    "name": "bastion",
+    "type": "module",
+    "version": "0.1.0",
+    "description": "Bastion TypeScript SDK",
+    "license": "MIT",
+    "sideEffects": false,
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "publishConfig": {
+        "access": "public"
+    },
+    "scripts": {
+        "codegen": "tsx ./scripts/codegen.ts",
+        "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint .",
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "peerDependencies": {
+        "@solana/kit": "^6.9.0",
+        "@solana/program-client-core": "^6.4.0"
+    },
+    "devDependencies": {
+        "@codama/nodes-from-anchor": "^1.4.1",
+        "@codama/renderers-js": "^2.2.0",
+        "@solana/kit": "^6.9.0",
+        "@solana/program-client-core": "^6.4.0",
+        "@workspace/eslint-config": "workspace:*",
+        "@workspace/typescript-config": "workspace:*",
+        "codama": "^1.4.0",
+        "eslint": "^9.32.0",
+        "tsx": "^4.22.3",
+        "typescript": "^6.0.0",
+        "vitest": "^3.2.4"
+    }
+}

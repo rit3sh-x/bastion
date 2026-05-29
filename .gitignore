@@ -10,3 +10,5 @@ test-ledger
 .turbo
 dist
 generated
+.env
+.env.local
