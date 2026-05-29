@@ -8,7 +8,7 @@
         },
         "lint": {
             "dependsOn": ["^lint"],
-            "env": ["MAYA_RPC"]
+            "env": ["RPC"]
         },
         "typecheck": {
             "dependsOn": ["^typecheck"]

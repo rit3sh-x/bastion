@@ -1,0 +1,13 @@
+{
+    "extends": "@workspace/typescript-config/library.json",
+    "compilerOptions": {
+        "outDir": "dist",
+        "rootDir": "src",
+        "paths": {
+            "@/*": ["./src/*"],
+            "@bastion/idl": ["../target/idl/bastion.json"],
+            "@bastion/types": ["../target/types/bastion.ts"]
+        }
+    },
+    "include": ["src"]
+}

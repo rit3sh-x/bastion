@@ -1,14 +1,13 @@
 {
-    "name": "bastion",
+    "name": "bastion-monorepo",
     "version": "0.0.1",
     "private": true,
     "scripts": {
         "build": "turbo build",
-        "dev": "turbo dev",
         "lint": "turbo lint",
         "typecheck": "turbo typecheck",
         "test": "turbo test",
-        "codegen": "pnpm -F types codegen",
+        "codegen": "pnpm -F bastion codegen",
         "format": "prettier --write .",
         "postinstall": "pnpm codegen"
     },

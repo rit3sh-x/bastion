@@ -277,7 +277,12 @@ impl<'info> Execute<'info> {
         for (i, p) in exec.policies.iter().enumerate() {
             match &p.data {
                 PolicyData::SpendCap { asset, .. } => {
-                    let pre = snapshot_for_asset(asset, exec.ix_accounts, exec.delegate_ai)?;
+                    let pre = snapshot_for_asset(
+                        asset,
+                        exec.ix_accounts,
+                        exec.delegate_ai,
+                        &self.session.owner,
+                    )?;
                     snaps.push(PolicySnapshot {
                         idx: i,
                         pre,
@@ -287,7 +292,12 @@ impl<'info> Execute<'info> {
                 }
 
                 PolicyData::AmountPerCall { asset, .. } => {
-                    let pre = snapshot_for_asset(asset, exec.ix_accounts, exec.delegate_ai)?;
+                    let pre = snapshot_for_asset(
+                        asset,
+                        exec.ix_accounts,
+                        exec.delegate_ai,
+                        &self.session.owner,
+                    )?;
                     snaps.push(PolicySnapshot {
                         idx: i,
                         pre,
@@ -316,7 +326,12 @@ impl<'info> Execute<'info> {
                     if program != &wrapped_ix.program_id {
                         continue;
                     }
-                    let pre = snapshot_for_asset(asset, exec.ix_accounts, exec.delegate_ai)?;
+                    let pre = snapshot_for_asset(
+                        asset,
+                        exec.ix_accounts,
+                        exec.delegate_ai,
+                        &self.session.owner,
+                    )?;
                     snaps.push(PolicySnapshot {
                         idx: i,
                         pre,
@@ -414,7 +429,12 @@ impl<'info> Execute<'info> {
                 PostAction::PerCounterpartyCap { receiver } => {
                     snapshot_for_asset_at_receiver(&snap.asset, exec.ix_accounts, receiver)?
                 }
-                _ => snapshot_for_asset(&snap.asset, exec.ix_accounts, exec.delegate_ai)?,
+                _ => snapshot_for_asset(
+                    &snap.asset,
+                    exec.ix_accounts,
+                    exec.delegate_ai,
+                    &self.session.owner,
+                )?,
             };
 
             let policy_info = exec

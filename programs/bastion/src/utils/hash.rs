@@ -7,7 +7,12 @@ pub const EMPTY_POLICIES_HASH: [u8; 32] = [0u8; 32];
 /// Behaviour:
 ///   - empty input → `EMPTY_POLICIES_HASH` (all zeros) so a fresh Session and
 ///     a Session with all policies detached share the same sentinel.
-///   - non-empty input → `blake3(concat(sort(keys).each().as_ref()))`
+///   - non-empty input → `sha256(concat(sort(keys).each().as_ref()))`
+///
+/// Uses the SHA-256 syscall (baseline / always active) rather than blake3 — the
+/// `blake3` syscall is gated behind an inactive feature on mainnet-feature-set
+/// validators (incl. surfpool), so a program calling `sol_blake3` fails to load
+/// with `Unresolved symbol (sol_blake3)`.
 ///
 /// Invariant: the value MUST match `session.policies_hash` on every `execute`.
 pub fn compute_policies_hash(keys: &[Pubkey]) -> [u8; 32] {
@@ -21,7 +26,7 @@ pub fn compute_policies_hash(keys: &[Pubkey]) -> [u8; 32] {
     for k in &sorted {
         refs.push(k.as_ref());
     }
-    solana_blake3_hasher::hashv(&refs).to_bytes()
+    solana_sha256_hasher::hashv(&refs).to_bytes()
 }
 
 #[cfg(test)]
@@ -36,9 +41,9 @@ mod tests {
     }
 
     #[test]
-    fn single_key_is_blake3_of_key_bytes() {
+    fn single_key_is_sha256_of_key_bytes() {
         let k = pk(7);
-        let expected = solana_blake3_hasher::hashv(&[k.as_ref()]).to_bytes();
+        let expected = solana_sha256_hasher::hashv(&[k.as_ref()]).to_bytes();
         assert_eq!(compute_policies_hash(&[k]), expected);
     }
 
@@ -75,7 +80,7 @@ mod tests {
     fn known_vector_two_keys() {
         let a = pk(0x11);
         let b = pk(0x22);
-        let expected = solana_blake3_hasher::hashv(&[a.as_ref(), b.as_ref()]).to_bytes();
+        let expected = solana_sha256_hasher::hashv(&[a.as_ref(), b.as_ref()]).to_bytes();
         assert_eq!(compute_policies_hash(&[a, b]), expected);
         assert_eq!(compute_policies_hash(&[b, a]), expected);
     }

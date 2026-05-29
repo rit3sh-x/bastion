@@ -26,7 +26,10 @@ pub fn snapshot_for_asset_at_receiver(
             }
             Ok(0)
         }
-        Asset::SplToken(_) | Asset::Token2022(_) => snapshot_asset(ix_accts, asset, receiver),
+        Asset::SplToken(_) | Asset::Token2022(_) => {
+            let controllers = [*receiver];
+            snapshot_asset(ix_accts, asset, &controllers)
+        }
         Asset::NftCountInCollection(_) | Asset::AnyNftCount => Ok(0),
     }
 }

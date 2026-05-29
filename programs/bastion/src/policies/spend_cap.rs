@@ -6,18 +6,24 @@ use crate::state::policy::{Asset, WindowKind};
 use crate::utils::balance_delta::snapshot_asset;
 
 /// Snapshot for `asset` reading from the supplied ix accounts + delegate AccountInfo.
-/// NativeSol uses `delegate.lamports()` directly (doesn't require delegate to be
-/// in `ix_accts`). SPL / Token-2022 use `snapshot_asset` over `ix_accts`.
+/// NativeSol uses `delegate.lamports()` directly (vault-only — Solana has no SOL
+/// allowance. SPL / Token-2022 sum balances the delegate CONTROLS:
+/// accounts owned by the delegate PDA (vault) OR by the session `owner` (allowance
+/// source), keyed on the stable token-account `owner` field.
 pub fn snapshot_for_asset(
     asset: &Asset,
     ix_accts: &[AccountInfo],
     delegate: &AccountInfo,
+    owner: &Pubkey,
 ) -> Result<u64> {
     match asset {
         Asset::NativeSol => Ok(delegate.lamports()),
 
         Asset::SplToken(_) | Asset::Token2022(_) => {
-            snapshot_asset(ix_accts, asset, &delegate.key())
+            // Iterating accounts once means a duplicate (degenerate
+            // delegate==owner) never double-counts an account.
+            let controllers = [delegate.key(), *owner];
+            snapshot_asset(ix_accts, asset, &controllers)
         }
 
         Asset::NftCountInCollection(_) | Asset::AnyNftCount => Ok(0),
