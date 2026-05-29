@@ -133,3 +133,33 @@ describe("associatedTokenAddress", () => {
         expect(t22).not.toBe(base);
     });
 });
+
+describe("u64 amount guard", () => {
+    it("rejects negative and >u64 amounts before encoding", () => {
+        expect(() =>
+            buildTokenTransferIx({
+                source: SOURCE,
+                dest: DEST,
+                authority: DELEGATE,
+                amount: -1n,
+            })
+        ).toThrow(RangeError);
+        expect(() =>
+            buildApproveIx({
+                source: SOURCE,
+                delegate: DELEGATE,
+                owner: OWNER,
+                amount: 2n ** 64n,
+            })
+        ).toThrow(RangeError);
+    });
+    it("accepts the u64 maximum", () => {
+        const ix = buildTokenTransferIx({
+            source: SOURCE,
+            dest: DEST,
+            authority: DELEGATE,
+            amount: 2n ** 64n - 1n,
+        });
+        expect(ix.data).toHaveLength(9);
+    });
+});

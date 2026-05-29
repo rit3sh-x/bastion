@@ -108,6 +108,11 @@ export interface ExecutionPlan {
 }
 
 function setComputeUnitLimitIx(limit: number): Instruction {
+    if (!Number.isInteger(limit) || limit < 0 || limit > 0xff_ff_ff_ff) {
+        throw new RangeError(
+            `computeUnitLimit must be a u32 (0..4294967295): ${limit}`
+        );
+    }
     const data = new Uint8Array(5);
     data[0] = 2;
     new DataView(data.buffer).setUint32(1, limit, true);
@@ -119,6 +124,11 @@ function setComputeUnitLimitIx(limit: number): Instruction {
 }
 
 function setComputeUnitPriceIx(microLamports: bigint): Instruction {
+    if (microLamports < 0n || microLamports > 0xff_ff_ff_ff_ff_ff_ff_ffn) {
+        throw new RangeError(
+            `computeUnitPrice must be a u64: ${microLamports}`
+        );
+    }
     const data = new Uint8Array(9);
     data[0] = 3;
     new DataView(data.buffer).setBigUint64(1, microLamports, true);

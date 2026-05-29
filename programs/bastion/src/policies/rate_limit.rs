@@ -11,20 +11,20 @@ use crate::state::policy::WindowKind;
 /// If `scope` is set, the policy only applies when `program_id == scope`;
 /// otherwise the call is not counted at all.
 pub fn charge_rate_limit(
-    state: &mut CounterState,
-    window: &WindowKind,
-    max: u32,
-    scope: &Option<Pubkey>,
-    program_id: &Pubkey,
-    now: i64,
+  state: &mut CounterState,
+  window: &WindowKind,
+  max: u32,
+  scope: &Option<Pubkey>,
+  program_id: &Pubkey,
+  now: i64,
 ) -> Result<()> {
-    if let Some(s) = scope {
-        if s != program_id {
-            return Ok(());
-        }
+  if let Some(s) = scope {
+    if s != program_id {
+      return Ok(());
     }
-    match window {
-        WindowKind::Fixed { secs } => state.charge_fixed(now, max, *secs),
-        WindowKind::Rolling { secs, slots } => state.charge_rolling(now, max, *secs, *slots),
-    }
+  }
+  match window {
+    WindowKind::Fixed { secs } => state.charge_fixed(now, max, *secs),
+    WindowKind::Rolling { secs, slots } => state.charge_rolling(now, max, *secs, *slots),
+  }
 }

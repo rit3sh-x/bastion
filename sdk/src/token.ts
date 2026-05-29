@@ -19,7 +19,12 @@ const IX_APPROVE = 4;
 const IX_REVOKE = 5;
 const IX_ATA_CREATE_IDEMPOTENT = 1;
 
+const U64_MAX = 0xff_ff_ff_ff_ff_ff_ff_ffn;
+
 function tagAndU64(tag: number, amount: bigint): Uint8Array {
+    if (amount < 0n || amount > U64_MAX) {
+        throw new RangeError(`token amount out of u64 range: ${amount}`);
+    }
     const data = new Uint8Array(9);
     data[0] = tag;
     new DataView(data.buffer).setBigUint64(1, amount, true);

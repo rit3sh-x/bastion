@@ -604,25 +604,38 @@ export function createSessionManager(
                 },
                 { programAddress: config.programId }
             );
-            await sendTx({
-                rpc: config.rpc,
-                rpcSubscriptions: subs,
-                feePayer: config.wallet,
-                instructions: [ix],
-                commitment: config.commitment,
-            });
-            logger.info("session.opened", {
-                op: "open",
-                sessionPda,
-                sessionKey: sessionKey.address,
-            });
-            return createSessionHandle({
-                config,
-                rpcSubscriptions: subs,
-                pubkey: sessionPda,
-                sessionKey,
-                logger,
-            });
+            let signature: Signature | undefined;
+            return withHooks(
+                config.hooks,
+                { op: "open", sessionPda, owner, startedAt: Date.now(), expiry },
+                async () => {
+                    signature = await sendTx({
+                        rpc: config.rpc,
+                        rpcSubscriptions: subs,
+                        feePayer: config.wallet,
+                        instructions: [ix],
+                        commitment: config.commitment,
+                    });
+                    logger.info("session.opened", {
+                        op: "open",
+                        sessionPda,
+                        sessionKey: sessionKey.address,
+                    });
+                    return createSessionHandle({
+                        config,
+                        rpcSubscriptions: subs,
+                        pubkey: sessionPda,
+                        sessionKey,
+                        logger,
+                    });
+                },
+                () => ({
+                    signature: signature as Signature,
+                    sessionPda,
+                    sessionKey: sessionKey.address,
+                }),
+                wrapSendError
+            );
         },
 
         hydrate(args) {
