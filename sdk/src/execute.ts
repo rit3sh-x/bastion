@@ -243,12 +243,16 @@ export async function planExecution(
 
     let hasCuPolicy = false;
     let hasPricePolicy = false;
+    let cuPolicyMax: number | undefined;
     const kinds: string[] = [];
     for (const { account } of pairs) {
-        const kind = account.data.__kind;
-        kinds.push(kind);
-        if (kind === "MaxComputeUnits") hasCuPolicy = true;
-        if (kind === "MaxPriorityFee") hasPricePolicy = true;
+        kinds.push(account.data.__kind);
+        if (account.data.__kind === "MaxComputeUnits") {
+            hasCuPolicy = true;
+            cuPolicyMax = account.data.max;
+        } else if (account.data.__kind === "MaxPriorityFee") {
+            hasPricePolicy = true;
+        }
     }
 
     const outerIxs: Instruction[] = [];
@@ -256,10 +260,11 @@ export async function planExecution(
         outerIxs.push(setComputeUnitLimitIx(args.computeUnitLimit));
     } else if (hasCuPolicy || legCount > 1) {
         // auto-size when a CU policy constrains us, or when a multi-leg batch
-        // would blow past the 200k network default.
-        outerIxs.push(
-            setComputeUnitLimitIx(estimateComputeUnits(kinds, legCount))
-        );
+        // would blow past the 200k network default. Never exceed a
+        // MaxComputeUnits policy ceiling — that would self-reject.
+        let cu = estimateComputeUnits(kinds, legCount);
+        if (cuPolicyMax !== undefined) cu = Math.min(cu, cuPolicyMax);
+        outerIxs.push(setComputeUnitLimitIx(cu));
     }
     if (args.computeUnitPrice !== undefined) {
         outerIxs.push(setComputeUnitPriceIx(args.computeUnitPrice));

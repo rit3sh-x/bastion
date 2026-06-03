@@ -517,13 +517,25 @@ function createSessionHandle(args: SessionHandleArgs): SessionHandle {
                 recentSlot,
                 bump,
             });
-            const extendIx = buildExtendLookupTableInstruction({
-                lookupTable,
-                authority: owner,
-                payer: owner,
-                addresses,
-            });
-            await send([createIx, extendIx], opts);
+            // Each Extend is bounded by the 1232-byte tx limit (~30 addrs at
+            // 32 bytes each). Chunk conservatively: create + first chunk in one
+            // tx, then one Extend tx per remaining chunk.
+            const CHUNK = 20;
+            const chunks: Address[][] = [];
+            for (let i = 0; i < addresses.length; i += CHUNK) {
+                chunks.push(addresses.slice(i, i + CHUNK));
+            }
+            const extend = (addrs: readonly Address[]) =>
+                buildExtendLookupTableInstruction({
+                    lookupTable,
+                    authority: owner,
+                    payer: owner,
+                    addresses: addrs,
+                });
+            await send([createIx, extend(chunks[0] ?? [])], opts);
+            for (const chunk of chunks.slice(1)) {
+                await send([extend(chunk)], opts);
+            }
             logger.info("lookupTable.created", {
                 op: "createLookupTable",
                 sessionPda: pubkey,

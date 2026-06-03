@@ -21,8 +21,6 @@ Sections:
 9. [Scaling axes](#9-scaling-axes)
 10. [SDK architecture](#10-sdk-architecture)
 11. [Session lifecycle](#11-session-lifecycle)
-12. [Security invariants](#12-security-invariants)
-13. [Repository layout](#13-repository-layout)
 
 ---
 

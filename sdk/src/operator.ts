@@ -174,10 +174,6 @@ export async function createOperatorClient(
             const [policyPda] = await pda.policy(sessionPda, BigInt(i));
             derived.push(policyPda);
         }
-        for (let i = 0; i < nextSeed; i++) {
-            const [policyPda] = await pda.policy(sessionPda, BigInt(i));
-            derived.push(policyPda);
-        }
         const maybe = await fetchAllMaybePolicy(rpc, derived);
         return maybe.filter((a) => a.exists).map((a) => a.address);
     };
