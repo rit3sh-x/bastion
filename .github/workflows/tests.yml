@@ -28,9 +28,13 @@ jobs:
 
             - name: Install Anchor
               run: |
-                  cargo install --git https://github.com/solana-foundation/anchor
+                  cargo install --git https://github.com/solana-foundation/anchor --tag v0.32.1 avm --force
                   avm install 1.0.2
                   avm use 1.0.2
+
+            - name: Generate keypair
+              run: |
+                  anchor keys sync
 
             - name: Build .so + IDL
               run: |
