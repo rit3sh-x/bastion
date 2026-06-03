@@ -29,7 +29,7 @@ solana-instructions-sysvar = "3.0.1"
 
 [dev-dependencies]
 borsh = "1.6"
-litesvm = "0.10.0"
+litesvm = { version = "0.10.0", features = ["precompiles"] }
 solana-account = "3.2.0"
 solana-message = "3.0.1"
 solana-transaction = "3.0.2"

@@ -17,7 +17,7 @@ pub const SEED_DELEGATE: &[u8] = b"delegate";
 pub const METADATA_SEED: &[u8] = b"metadata";
 
 // Not `#[constant]` since Anchor IDL does not support `usize`.
-pub const MAX_POLICIES_PER_EXECUTE: usize = 16;
+pub const MAX_POLICIES_PER_EXECUTE: usize = 32;
 pub const MAX_PROGRAMS_PER_LIST: usize = 32;
 pub const MAX_RING_SLOTS: usize = 8;
 
@@ -27,3 +27,7 @@ pub const MPL_TOKEN_METADATA_ID: Pubkey = pubkey!("metaqbxxUerdq28cj1RbAWkYQm3yb
 /// Compute Budget program.
 /// Used for CU + priority fee enforcement.
 pub const COMPUTE_BUDGET_ID: Pubkey = pubkey!("ComputeBudget111111111111111111111111111111");
+
+/// Ed25519 signature-verification precompile. The runtime verifies its
+/// signatures; `execute` only introspects it to bind a holder-signed manifest.
+pub const ED25519_PROGRAM_ID: Pubkey = pubkey!("Ed25519SigVerify111111111111111111111111111");

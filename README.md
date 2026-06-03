@@ -1,8 +1,8 @@
 # Bastion
 
-A policy firewall for Solana. Bastion lets a wallet owner delegate _narrowly scoped_, _short-lived_ authority to an AI agent, trading bot, or dApp — and have every action that delegate takes enforced on-chain by a composable set of policy accounts.
+A **policy firewall for Solana**. Bastion lets a wallet owner delegate _narrowly scoped_, _short-lived_, _revocable_ authority to an AI agent, trading bot, or dApp — and have every action that delegate takes enforced on-chain by a composable set of policy accounts.
 
-The agent never sees the owner's private key. It signs with a disposable **session key**. Every wrapped transaction routes through the Bastion program, which validates the request against the policies the owner attached, charges windowed counters / spend caps, and only then CPIs into the target program.
+The agent never sees the owner's private key. It holds a disposable **session key** and a shippable **operator credential**. Every wrapped transaction routes through the Bastion program, which validates the request against the policies the owner attached, charges windowed counters / spend caps, and only then CPIs into the target program via a **delegate PDA** (which has no private key — only the program can make it sign).
 
 ---
 
@@ -10,30 +10,43 @@ The agent never sees the owner's private key. It signs with a disposable **sessi
 
 ```mermaid
 flowchart LR
-    Owner["Owner wallet"]
-    SDK["@workspace/sdk<br/>(TypeScript)"]
+    Owner["Owner wallet<br/>(holder key)"]
+    Holder["createHolderClient<br/>(admin)"]
     Program["Bastion program<br/>(on-chain)"]
-    Agent["AI agent / bot<br/>(holds session key)"]
-    Target["Target program<br/>(Jupiter, SPL Token, etc.)"]
+    Agent["AI agent / bot<br/>(operator: session key only)"]
+    Target["Target program<br/>Jupiter / SPL Token / ..."]
 
-    Owner -->|attach policies| SDK
-    SDK -->|init_session, attach_policy| Program
-    Owner -->|hand over session key| Agent
-    Agent -->|execute&#40;inner_ix&#41;| Program
-    Program -->|validate + charge counters| Program
-    Program -->|invoke_signed via Delegate PDA| Target
+    Owner --> Holder
+    Holder -->|"init_session, attach_policy, approve allowance"| Program
+    Holder -->|"ship operator credential (no owner key)"| Agent
+    Agent -->|"execute(inner_ix)"| Program
+    Program -->|"validate + charge counters"| Program
+    Program -->|"invoke_signed via delegate PDA"| Target
 ```
 
-A single execute call:
+A single `execute` call:
 
-1. Validates the session (not revoked, not expired).
-2. Loads attached policies and verifies the hash matches what the session expects.
-3. For each policy, runs its pre-CPI check (allowlist, time window, ix shape, etc.).
-4. For spend-related policies, snapshots the relevant balance pre-CPI.
-5. CPIs into the target program via the delegate PDA's signer seeds.
-6. Re-snapshots post-CPI, charges spend / per-counterparty / per-program caps, and enforces the rent-exempt + min-balance floors.
+1. Validates the session (not revoked, not expired) and optional nonce ordering.
+2. Loads the attached policies and verifies the count + SHA-256 hash match what the session expects.
+3. For each wrapped leg: runs every policy's pre-CPI check, charges frequency counters, snapshots spend balances.
+4. CPIs into the target program via the delegate PDA's signer seeds.
+5. Re-snapshots, charges spend / per-counterparty / per-program caps, enforces rent-exempt + min-balance floors.
+6. Increments `action_nonce`.
 
-Any failure at any step reverts the whole tx atomically.
+Any failure at any step reverts the whole transaction atomically.
+
+---
+
+## The two-key model
+
+Two distinct keys, never combined — this is the security spine ([details](ARCHITECTURE.md#3-the-two-key-trust-model)):
+
+| Key                        | Holder                           | Can do                                   | Cannot do                                    |
+| -------------------------- | -------------------------------- | ---------------------------------------- | -------------------------------------------- |
+| **Holder** (owner)         | the human                        | open / attach / approve / revoke / sweep | —                                            |
+| **Operator** (session key) | the agent (shippable credential) | `execute` + reads                        | change policies, drain, sign owner transfers |
+
+`execute` requires only the session-key signer; `init_session` enforces `session_key ≠ owner`; the SPL `approve` targets the delegate PDA. So a fully leaked operator credential is bounded by `min(policy caps, approve allowance)` and **cannot drain**.
 
 ---
 
@@ -42,87 +55,83 @@ Any failure at any step reverts the whole tx atomically.
 ```mermaid
 flowchart TD
     Root["bastion/"]
+    Root --> Program["programs/bastion/<br/>Anchor on-chain program"]
+    Root --> SDK["sdk/<br/>TypeScript SDK (package: bastion)"]
+    Root --> Examples["examples/bot/<br/>AI-agent demo"]
+    Root --> Docs["SPEC.md / ARCHITECTURE.md"]
 
-    Root --> Program["programs/bastion/<br/>(Anchor on-chain program)"]
-    Root --> Packages["packages/<br/>(TypeScript monorepo)"]
-    Root --> Examples["examples/<br/>(trading-bot demo)"]
-    Root --> Scripts["scripts/"]
-    Root --> Tooling["tooling/"]
+    Program --> ProgInstr["src/instructions/"]
+    Program --> ProgPol["src/policies/"]
+    Program --> ProgState["src/state/"]
+    Program --> ProgTests["tests/ (LiteSVM)"]
 
-    Packages --> Types["@workspace/types"]
-    Packages --> SDK["@workspace/sdk<br/>(public API)"]
-
-    Program --> ProgInstr["instructions/"]
-    Program --> ProgPol["policies/"]
-    Program --> ProgState["state/"]
-    Program --> ProgUtils["utils/"]
-    Program --> ProgTests["tests/"]
+    SDK --> Holder["src/holder.ts"]
+    SDK --> Operator["src/operator.ts"]
+    SDK --> Gen["src/generated/ (codama)"]
 ```
-
-## Session lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Init: createBastion + init_session
-    Init --> Active: attach_policy(s)
-    Active --> Active: execute (under policies)
-    Active --> Extended: extend_session
-    Extended --> Active
-    Active --> Revoked: revoke_session
-    Active --> Expired: clock > expiry
-    Revoked --> Closed: close_session + sweep_delegate
-    Expired --> Closed
-    Closed --> [*]
-```
-
-The owner is the only authority that can `attach_policy`, `update_policy`, `detach_policy`, `revoke_session`, `extend_session`, or `close_session`. The session key can only call `execute`, and only within the bounds defined by attached policies. The delegate PDA holds funds and SPL approvals; only `execute` can transact through it; `sweep_delegate` (owner) reclaims everything once the session is revoked.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Install workspace deps + build the on-chain program
+# 1. Install workspace deps
 pnpm install
-anchor build
 
-# 2. Run the full test suite (Rust unit + LiteSVM integration + TS)
-anchor run testsvm
-anchor run testunit
-pnpm test
+# 2. Build the on-chain program (.so + IDL)
+anchor build            # or: cargo build-sbf --manifest-path programs/bastion/Cargo.toml
 
-# 3. Try the demo: a Vercel AI SDK trading agent gated by Bastion
-cp examples/trading-bot/.env.example examples/trading-bot/.env
-# edit .env with ANTHROPIC_API_KEY (or OPENAI_API_KEY)
-pnpm demo
+# 3. Run the test suite
+anchor run testall              # Rust unit + LiteSVM integration
+pnpm test                       # SDK (vitest)
 ```
 
 ---
 
-## The 5-line SDK example
+## SDK example — two-key
 
 ```ts
-import { createBastion, P, W, A, sol, days, T } from "@workspace/sdk";
+import {
+    createHolderClient,
+    createOperatorClient,
+    serializeOperatorCredential,
+    parseOperatorCredential,
+    policyData as P,
+    asset as A,
+    windowKind as W,
+    sol,
+    days,
+} from "bastion";
 
-const bastion = createBastion({ url: "https://api.devnet.solana.com", wallet });
+// --- HOLDER side (owner machine) ---
+const holder = createHolderClient({
+    url: "https://api.devnet.solana.com",
+    wallet,
+});
 
-const session = await bastion.openSession({ expiresIn: days(1) });
-await session.attachMany([
-    P.programAllowlist({ programs: [JUPITER, SPL_TOKEN] }),
-    P.spendCap({ asset: A.sol(), window: W.fixed(days(1)), max: sol(50) }),
-    P.timeOfDayWindow({
-        startMinute: 9 * 60,
-        endMinute: 17 * 60,
-        daysMask: T.workdays,
-    }),
-    P.cooldownPeriod({ secs: 5 }),
-]);
+const { handle, operator } = await holder.openSession({
+    expiry: { secsFromNow: days(1) },
+    policies: [
+        P.programAllowlist({ programs: [JUPITER, SPL_TOKEN] }),
+        P.spendCap({ asset: A.sol(), window: W.fixed(days(1)), max: sol(50) }),
+        P.cooldownPeriod({ secs: 5 }),
+    ],
+    // allowance: { mint, amount },   // SPL: spend straight from the owner ATA
+});
 
-await session.execute({ inner: jupiterSwapIx });
-await session.revoke();
+// ship this to the agent — it contains the session secret + owner PUBKEY, never the owner key
+const credentialJson = serializeOperatorCredential(operator);
+
+// --- OPERATOR side (agent host) ---
+const op = await createOperatorClient(parseOperatorCredential(credentialJson));
+await op.execute({ inner: jupiterSwapIx }); // one atomic action
+await op.executeBatch({ inners: [approveIx, swapIx] }); // compound, all-or-nothing
+
+// --- kill switch (holder) ---
+await handle.revoke();
 ```
 
-That's the contract: typed numeric helpers (`sol(50)`, `days(1)`), composable policy builders, a single `execute` that goes through the full pipeline.
+See [`sdk/README.md`](sdk/README.md) for the full API (batches, ordered sequences, hooks, error surface).
 
 ---
 
@@ -139,8 +148,9 @@ That's the contract: typed numeric helpers (`sol(50)`, `days(1)`), composable po
 
 ## Where to go next
 
-| If you want to…                                                               | Read                                                       |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Understand the on-chain program (PDAs, execute pipeline, all 24 policy kinds) | [`programs/bastion/README.md`](programs/bastion/README.md) |
-| Build with the TypeScript SDK                                                 | [`packages/sdk/src/`](packages/sdk/src/)                   |
-| See a real agent gated by Bastion                                             | [`examples/trading-bot/`](examples/trading-bot/)           |
+| If you want to…                                                       | Read                                                       |
+| --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Understand the whole system                                           | [`ARCHITECTURE.md`](ARCHITECTURE.md)                       |
+| Understand the on-chain program (PDAs, execute pipeline, 24 policies) | [`programs/bastion/README.md`](programs/bastion/README.md) |
+| Build with the TypeScript SDK                                         | [`sdk/README.md`](sdk/README.md)                           |
+| See a real agent gated by Bastion                                     | [`examples/bot/README.md`](examples/bot/README.md)         |

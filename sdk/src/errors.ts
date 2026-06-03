@@ -1,4 +1,9 @@
-import * as E from "./generated";
+import {
+    getBastionErrorMessage,
+    SESSION_REVOKED,
+    MANIFEST_POLICY_NOT_STATELESS,
+    type BastionError,
+} from "@bastion/generated";
 
 export type SdkInternalReason =
     | "InvalidConfig"
@@ -58,54 +63,17 @@ export class BastionSdkError extends Error {
     }
 }
 
-const BASTION_ERROR_CODES: ReadonlySet<number> = new Set([
-    E.SESSION_REVOKED,
-    E.SESSION_EXPIRED,
-    E.SESSION_INVALID_SIGNER,
-    E.FOREIGN_POLICY,
-    E.POLICY_DISABLED,
-    E.POLICY_HASH_MISMATCH,
-    E.POLICY_COUNT_MISMATCH,
-    E.POLICY_TOO_MANY,
-    E.FOREIGN_SIGNER_NOT_ALLOWED,
-    E.PROGRAM_NOT_ALLOWED,
-    E.PROGRAM_BLOCKED,
-    E.MINT_NOT_ALLOWED,
-    E.MINT_BLOCKED,
-    E.NFT_COLLECTION_NOT_ALLOWED,
-    E.NFT_COLLECTION_BLOCKED,
-    E.NOT_AN_NFT_MINT,
-    E.RATE_LIMIT_EXCEEDED,
-    E.SPEND_CAP_EXCEEDED,
-    E.RENT_EXEMPT_FLOOR_VIOLATION,
-    E.EXPIRY_VIOLATION,
-    E.POLICY_KIND_MISMATCH,
-    E.UNSUPPORTED_TOKEN_PROGRAM,
-    E.INVALID_METADATA_ACCOUNT,
-    E.INVALID_POLICY_DATA,
-    E.LIST_TOO_LONG,
-    E.INVALID_WINDOW,
-    E.INVALID_PDA,
-    E.INITIAL_POLICY_COUNT_MISMATCH,
-    E.SESSION_NOT_REVOKED,
-    E.NUMERICAL_OVERFLOW,
-    E.INVALID_COMPACT_META,
-    E.COOLDOWN_ACTIVE,
-    E.AMOUNT_PER_CALL_EXCEEDED,
-    E.MAX_CALLS_EXCEEDED,
-    E.OUTSIDE_ALLOWED_TIME,
-    E.IX_TOO_LARGE,
-    E.NFT_CREATOR_NOT_ALLOWED,
-    E.DELEGATE_BALANCE_TOO_LOW,
-    E.IX_DISCRIMINATOR_NOT_ALLOWED,
-    E.MISSING_REQUIRED_MEMO,
-    E.ACCOUNT_CLOSE_NOT_ALLOWED,
-    E.COUNTERPARTY_CAP_EXCEEDED,
-    E.PROGRAM_SPEND_CAP_EXCEEDED,
-    E.COMPUTE_UNITS_TOO_HIGH,
-    E.PRIORITY_FEE_TOO_HIGH,
-    E.NEW_EXPIRY_NOT_GREATER,
-]);
+const FIRST_CODE = SESSION_REVOKED;
+const LAST_CODE = MANIFEST_POLICY_NOT_STATELESS;
+
+function isBastionCode(n: number): boolean {
+    return Number.isInteger(n) && n >= FIRST_CODE && n <= LAST_CODE;
+}
+
+function messageForCode(code: number, alt: string): string {
+    const m = getBastionErrorMessage(code as BastionError);
+    return m && !m.startsWith("Error message not available") ? m : alt;
+}
 
 const ANCHOR_RE = /Error Number:\s*(\d+)/;
 const ANCHOR_NAME_RE = /Error Code:\s*(\w+)/;
@@ -118,11 +86,11 @@ export function parseProgramError(
         const a = line.match(ANCHOR_RE);
         if (a?.[1]) {
             const num = Number(a[1]);
-            if (BASTION_ERROR_CODES.has(num)) {
+            if (isBastionCode(num)) {
                 const name = line.match(ANCHOR_NAME_RE)?.[1];
                 return new BastionSdkError({
                     code: num,
-                    message: name ?? line,
+                    message: name ?? messageForCode(num, line),
                     onChainCode: num,
                     logs,
                 });
@@ -131,10 +99,13 @@ export function parseProgramError(
         const c = line.match(CUSTOM_RE);
         if (c?.[1]) {
             const num = parseInt(c[1], 16);
-            if (BASTION_ERROR_CODES.has(num)) {
+            if (isBastionCode(num)) {
                 return new BastionSdkError({
                     code: num,
-                    message: `custom program error #${num}`,
+                    message: messageForCode(
+                        num,
+                        `custom program error #${num}`
+                    ),
                     onChainCode: num,
                     logs,
                 });
@@ -155,7 +126,7 @@ export function wrapSendError(err: unknown): BastionSdkError {
     if (code !== undefined) {
         return new BastionSdkError({
             code,
-            message: `program error #${code}`,
+            message: messageForCode(code, `program error #${code}`),
             onChainCode: code,
             ...(logs.length > 0 ? { logs } : {}),
             cause: err,
@@ -211,7 +182,7 @@ function extractLogs(err: unknown): readonly string[] {
 function extractCustomCode(err: unknown): number | undefined {
     return walkCause(err, (n) => {
         const code = n.context?.code;
-        return typeof code === "number" && BASTION_ERROR_CODES.has(code)
+        return typeof code === "number" && isBastionCode(code)
             ? code
             : undefined;
     });

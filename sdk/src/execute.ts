@@ -2,6 +2,7 @@ import {
     AccountRole,
     appendTransactionMessageInstructions,
     assertIsTransactionMessageWithinSizeLimit,
+    compressTransactionMessageUsingAddressLookupTables,
     assertIsTransactionWithBlockhashLifetime,
     createTransactionMessage,
     getSignatureFromTransaction,
@@ -28,7 +29,7 @@ import {
     fetchAllPolicy,
     type CompactAccountMeta,
     type Policy,
-} from "./generated";
+} from "@bastion/generated";
 import { wrapSendError } from "./errors";
 
 const BASTION_FLAG_SIGNER = 0b01;
@@ -78,6 +79,62 @@ export function wrapInner(inner: Instruction): WrappedInner {
         data: inner.data ?? new Uint8Array(0),
         innerMetas,
     };
+}
+
+export interface WrappedLeg {
+    programId: Address;
+    accounts: CompactAccountMeta[];
+    data: ReadonlyUint8Array;
+}
+
+export interface WrappedBatch {
+    legs: WrappedLeg[];
+    /** Shared account pool every leg's CompactAccountMeta indexes into. */
+    innerMetas: AccountMeta[];
+    /** Distinct wrapped program ids (must be present in the tx account list). */
+    programIds: Address[];
+}
+
+/**
+ * Wrap N inner instructions into one batch sharing a single deduplicated account
+ * pool — mirrors the program's `wrapped_ixs: Vec<WrappedInstruction>` over a
+ * shared `ix_accounts` slice. Each leg references the pool by index.
+ */
+export function wrapInnerBatch(inners: readonly Instruction[]): WrappedBatch {
+    const idxByKey = new Map<Address, number>();
+    const innerMetas: AccountMeta[] = [];
+
+    for (const inner of inners) {
+        for (const meta of inner.accounts ?? []) {
+            const existing = idxByKey.get(meta.address);
+            if (existing === undefined) {
+                idxByKey.set(meta.address, innerMetas.length);
+                innerMetas.push({ address: meta.address, role: meta.role });
+            } else {
+                const prev = innerMetas[existing]!;
+                innerMetas[existing] = {
+                    address: prev.address,
+                    role: mergeAccountRole(prev.role, meta.role),
+                };
+            }
+        }
+    }
+
+    const legs: WrappedLeg[] = inners.map((inner) => ({
+        programId: inner.programAddress,
+        accounts: (inner.accounts ?? []).map((meta) => {
+            const idx = idxByKey.get(meta.address)!;
+            return {
+                index: idx,
+                flags: roleToBastionFlags(innerMetas[idx]!.role),
+            };
+        }),
+        data: inner.data ?? new Uint8Array(0),
+    }));
+
+    const programIds = [...new Set(inners.map((i) => i.programAddress))];
+
+    return { legs, innerMetas, programIds };
 }
 
 function mergeAccountRole(a: AccountRole, b: AccountRole): AccountRole {
@@ -143,10 +200,39 @@ function memoIx(program: Address, data: Uint8Array): Instruction {
     return { programAddress: program, accounts: [], data };
 }
 
+/** Rough CU cost of validating + charging one policy of the given kind. */
+function policyCuWeight(kind: string): number {
+    switch (kind) {
+        case "NftCollectionAllowlist":
+        case "NftCollectionBlocklist":
+        case "NftCreatorAllowlist":
+            return 25_000;
+        case "SpendCap":
+        case "AmountPerCall":
+        case "PerCounterpartyCap":
+        case "PerProgramSpendCap":
+        case "MinDelegateBalance":
+            return 12_000;
+        default:
+            return 6_000;
+    }
+}
+
+/** Dynamic CU estimate: base + legs × (Σ per-policy weight + per-leg CPI). */
+export function estimateComputeUnits(
+    kinds: readonly string[],
+    legCount: number
+): number {
+    const perLeg = kinds.reduce((s, k) => s + policyCuWeight(k), 0) + 10_000;
+    const est = 30_000 + Math.max(1, legCount) * perLeg;
+    return Math.min(Math.max(est, 50_000), 1_400_000);
+}
+
 export async function planExecution(
     rpc: Rpc<SolanaRpcApi>,
     policyAddresses: readonly Address[],
-    args: OuterIxArgs
+    args: OuterIxArgs,
+    legCount = 1
 ): Promise<ExecutionPlan> {
     const decoded = await fetchAllPolicy(rpc, [...policyAddresses]);
     const pairs = decoded
@@ -157,8 +243,10 @@ export async function planExecution(
 
     let hasCuPolicy = false;
     let hasPricePolicy = false;
+    const kinds: string[] = [];
     for (const { account } of pairs) {
         const kind = account.data.__kind;
+        kinds.push(kind);
         if (kind === "MaxComputeUnits") hasCuPolicy = true;
         if (kind === "MaxPriorityFee") hasPricePolicy = true;
     }
@@ -166,8 +254,12 @@ export async function planExecution(
     const outerIxs: Instruction[] = [];
     if (args.computeUnitLimit !== undefined) {
         outerIxs.push(setComputeUnitLimitIx(args.computeUnitLimit));
-    } else if (hasCuPolicy) {
-        outerIxs.push(setComputeUnitLimitIx(400_000));
+    } else if (hasCuPolicy || legCount > 1) {
+        // auto-size when a CU policy constrains us, or when a multi-leg batch
+        // would blow past the 200k network default.
+        outerIxs.push(
+            setComputeUnitLimitIx(estimateComputeUnits(kinds, legCount))
+        );
     }
     if (args.computeUnitPrice !== undefined) {
         outerIxs.push(setComputeUnitPriceIx(args.computeUnitPrice));
@@ -187,6 +279,12 @@ export interface SendArgs {
     feePayer: TransactionSigner;
     instructions: readonly Instruction[];
     commitment?: Commitment;
+    /**
+     * `{ [lookupTableAddress]: addresses[] }`. When present, the message is
+     * compressed against these tables so it can reference far more accounts than
+     * the ~64-key static limit. The tables must already exist on-chain.
+     */
+    addressLookupTables?: Record<Address, Address[]>;
 }
 
 export async function sendTx(args: SendArgs): Promise<Signature> {
@@ -195,13 +293,21 @@ export async function sendTx(args: SendArgs): Promise<Signature> {
             .getLatestBlockhash({ commitment: args.commitment ?? "confirmed" })
             .send();
 
-        const message = pipe(
+        const base = pipe(
             createTransactionMessage({ version: 0 }),
             (m) => setTransactionMessageFeePayerSigner(args.feePayer, m),
             (m) => setTransactionMessageLifetimeUsingBlockhash(latest, m),
             (m) =>
                 appendTransactionMessageInstructions([...args.instructions], m)
         );
+        const message =
+            args.addressLookupTables &&
+            Object.keys(args.addressLookupTables).length > 0
+                ? compressTransactionMessageUsingAddressLookupTables(
+                      base,
+                      args.addressLookupTables
+                  )
+                : base;
         assertIsTransactionMessageWithinSizeLimit(message);
 
         const signed = await signTransactionMessageWithSigners(message);

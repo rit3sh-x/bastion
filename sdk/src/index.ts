@@ -45,8 +45,60 @@ export type {
     CreateAtaArgs,
 } from "./token";
 
-export type { WalletSigner, SessionSigner } from "./wallet";
-export { fromSecretKey, generateSessionKey } from "./wallet";
+export type {
+    WalletSigner,
+    SessionSigner,
+    ExtractableSessionKey,
+} from "./wallet";
+export {
+    fromSecretKey,
+    generateSessionKey,
+    generateExtractableSessionKey,
+    sessionKeyFromSecret,
+} from "./wallet";
+
+export { createHolderClient } from "./holder";
+export type {
+    HolderClient,
+    HolderOpenArgs,
+    HolderOpenResult,
+    HolderAllowanceArgs,
+} from "./holder";
+
+export {
+    createOperatorClient,
+    serializeOperatorCredential,
+    parseOperatorCredential,
+} from "./operator";
+export type {
+    OperatorClient,
+    OperatorCredential,
+    OperatorExecuteArgs,
+    OperatorBatchArgs,
+    OperatorTxOpts,
+    SequenceResult,
+    SequenceStep,
+    CreateOperatorClientOptions,
+} from "./operator";
+
+export { wrapInner, wrapInnerBatch, planExecution } from "./execute";
+export type { WrappedInner, WrappedBatch, WrappedLeg } from "./execute";
+
+export {
+    computeManifestHash,
+    buildEd25519Instruction,
+    signManifest,
+    publicKeyBytes,
+    ED25519_PROGRAM_ADDRESS,
+} from "./manifest";
+export type { SignedManifest } from "./manifest";
+
+export {
+    ADDRESS_LOOKUP_TABLE_PROGRAM_ADDRESS,
+    deriveLookupTableAddress,
+    buildCreateLookupTableInstruction,
+    buildExtendLookupTableInstruction,
+} from "./alt";
 
 export { BastionSdkError, parseProgramError, wrapSendError } from "./errors";
 export type { SdkInternalReason, BastionErrorCode } from "./errors";
@@ -102,10 +154,6 @@ export {
     EMPTY_COUNTER_STATE,
 } from "./helpers";
 
-export * from "./generated";
+export * from "@bastion/generated";
 
-import type { ExecuteInstructionDataArgs } from "./generated";
-export type WrappedInstruction = Pick<
-    ExecuteInstructionDataArgs,
-    "programId" | "accounts" | "data"
->;
+export type { WrappedInstructionArgs as WrappedInstruction } from "@bastion/generated";

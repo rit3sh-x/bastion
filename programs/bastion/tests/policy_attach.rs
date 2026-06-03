@@ -84,6 +84,42 @@ fn attach_rejects_when_existing_count_mismatch() {
 }
 
 #[test]
+fn attach_allows_up_to_cap_then_rejects() {
+    let (mut svm, owner) = setup_svm();
+    let (session_pda, _) = init_session(&mut svm, &owner, 86_400).expect("init");
+
+    let mut existing: Vec<anchor_lang::prelude::Pubkey> = Vec::new();
+    for i in 0..32 {
+        svm.expire_blockhash();
+        let (pda, _) = attach_policy(
+            &mut svm,
+            &owner,
+            &session_pda,
+            PolicyData::ForeignSignerNotAllowed,
+            &existing,
+        )
+        .unwrap_or_else(|e| panic!("attach {} within cap: {:?}", i, e.meta.logs));
+        existing.push(pda);
+    }
+
+    let session = fetch_session(&svm, &session_pda);
+    assert_eq!(session.policy_count, 32, "filled to cap");
+
+    svm.expire_blockhash();
+    let seed = session.policy_count as u64;
+    let (p_over, _) = derive_policy_pda(&session_pda, seed);
+    let ix = attach_policy_ix(
+        &owner.pubkey(),
+        &session_pda,
+        &p_over,
+        PolicyData::ForeignSignerNotAllowed,
+        &existing,
+    );
+    let res = send_ix(&mut svm, ix, &[&owner]);
+    assert_svm_anchor_error(res, BastionError::PolicyTooMany);
+}
+
+#[test]
 fn close_session_after_attach_closes_child_policy() {
     let (mut svm, owner) = setup_svm();
     let (session_pda, _) = init_session(&mut svm, &owner, 86_400).expect("init");

@@ -18,7 +18,7 @@ pub const TEST_CLOCK_TS: i64 = 1_704_067_200;
 
 pub const ONE_SOL: u64 = 1_000_000_000;
 
-const BASTION_SO: &[u8] = include_bytes!("../../../../target/deploy/bastion.so");
+const BASTION_BINARY: &[u8] = include_bytes!("../../../../target/deploy/bastion.so");
 
 pub fn assert_svm_anchor_error<T, E>(
     result: std::result::Result<T, litesvm::types::FailedTransactionMetadata>,
@@ -46,7 +46,7 @@ pub fn assert_svm_anchor_error<T, E>(
 pub fn setup_svm() -> (LiteSVM, Keypair) {
     let mut svm = LiteSVM::new();
     let program_id = bastion::id();
-    svm.add_program(program_id, BASTION_SO)
+    svm.add_program(program_id, BASTION_BINARY)
         .expect("load bastion.so into LiteSVM");
 
     let payer = Keypair::new();
@@ -412,11 +412,12 @@ pub fn sweep_delegate(
     )
 }
 
-pub fn execute_ix(
+pub fn execute_batch_ix(
     session_key: &Pubkey,
     session_pda: &Pubkey,
-    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
+    wrapped_ixs: Vec<bastion::state::wrapped_ix::WrappedInstruction>,
     policy_count: u8,
+    expected_nonce: Option<u64>,
     extra: &[anchor_lang::solana_program::instruction::AccountMeta],
 ) -> Instruction {
     let mut metas = bastion::accounts::Execute {
@@ -430,11 +431,30 @@ pub fn execute_ix(
         program_id: bastion::id(),
         accounts: metas,
         data: bastion::instruction::Execute {
-            wrapped_ix,
+            wrapped_ixs,
             policy_count,
+            expected_nonce,
+            manifest: None,
         }
         .data(),
     }
+}
+
+pub fn execute_ix(
+    session_key: &Pubkey,
+    session_pda: &Pubkey,
+    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
+    policy_count: u8,
+    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
+) -> Instruction {
+    execute_batch_ix(
+        session_key,
+        session_pda,
+        vec![wrapped_ix],
+        policy_count,
+        None,
+        extra,
+    )
 }
 
 pub fn execute(
@@ -452,6 +472,51 @@ pub fn execute(
             session_pda,
             wrapped_ix,
             policy_count,
+            extra,
+        ),
+        &[session_key],
+    )
+}
+
+pub fn execute_batch(
+    svm: &mut LiteSVM,
+    session_key: &Keypair,
+    session_pda: &Pubkey,
+    wrapped_ixs: Vec<bastion::state::wrapped_ix::WrappedInstruction>,
+    policy_count: u8,
+    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
+) -> std::result::Result<(), FailedTransactionMetadata> {
+    send_ix(
+        svm,
+        execute_batch_ix(
+            &session_key.pubkey(),
+            session_pda,
+            wrapped_ixs,
+            policy_count,
+            None,
+            extra,
+        ),
+        &[session_key],
+    )
+}
+
+pub fn execute_with_nonce(
+    svm: &mut LiteSVM,
+    session_key: &Keypair,
+    session_pda: &Pubkey,
+    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
+    policy_count: u8,
+    expected_nonce: Option<u64>,
+    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
+) -> std::result::Result<(), FailedTransactionMetadata> {
+    send_ix(
+        svm,
+        execute_batch_ix(
+            &session_key.pubkey(),
+            session_pda,
+            vec![wrapped_ix],
+            policy_count,
+            expected_nonce,
             extra,
         ),
         &[session_key],

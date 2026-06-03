@@ -1,5 +1,5 @@
 import type { Address, Instruction, Signature } from "@solana/kit";
-import type { PolicyDataArgs } from "./generated";
+import type { PolicyDataArgs } from "@bastion/generated";
 import type { BastionSdkError } from "./errors";
 
 export interface BaseHookContext {

@@ -13,6 +13,15 @@ pub struct Session {
     pub next_seed: u64,
     pub policies_hash: [u8; 32],
     pub delegate_bump: u8,
+    /// Monotonic counter, +1 per `execute` (per tx, not per batch leg). Enables
+    /// optional `expected_nonce` ordering for multi-tx sequences.
+    pub action_nonce: u64,
+    /// Tamper-evident audit chain: sha256(prev || wrapped_ixs || nonce) updated
+    /// every `execute`. Genesis = all-zero.
+    pub chain_hash: [u8; 32],
+    /// Pinned commitment to a holder-signed stateless-policy manifest. Zero =
+    /// none. `execute` with a manifest requires hash == this.
+    pub manifest_hash: [u8; 32],
 }
 
 impl Session {
@@ -40,16 +49,19 @@ mod tests {
         // next_seed        8
         // policies_hash   32
         // delegate_bump    1
+        // action_nonce     8
+        // chain_hash      32
+        // manifest_hash   32
         // ──────────────
-        // total          124
+        // total          196
 
-        assert_eq!(Session::INIT_SPACE, 124);
+        assert_eq!(Session::INIT_SPACE, 196);
 
         // discriminator    8
-        // payload         124
+        // payload         196
         // ──────────────
-        // total           132
+        // total           204
 
-        assert_eq!(Session::SPACE, 132);
+        assert_eq!(Session::SPACE, 204);
     }
 }

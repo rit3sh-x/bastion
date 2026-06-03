@@ -103,6 +103,16 @@ fn init_session_rejects_duplicate_pda() {
 }
 
 #[test]
+fn init_session_rejects_session_key_equal_owner() {
+    // V3: operator (session_key) must differ from holder (owner).
+    let (mut svm, owner) = setup_svm();
+    let expiry = now(&svm).checked_add(3600).expect("not_after overflow");
+
+    let res = send_init_session(&mut svm, &owner, owner.pubkey(), expiry);
+    assert_svm_anchor_error(res, BastionError::SessionKeyIsOwner);
+}
+
+#[test]
 fn init_session_rejects_past_expiry() {
     let (mut svm, owner) = setup_svm();
     let session_key = Pubkey::new_unique();

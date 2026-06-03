@@ -3,6 +3,6 @@ import strict from "@workspace/eslint-config/strict";
 export default [
     ...strict,
     {
-        ignores: ["dist/**", "node_modules/**"],
+        ignores: ["dist/**", "node_modules/**", "generated/**"],
     },
 ];

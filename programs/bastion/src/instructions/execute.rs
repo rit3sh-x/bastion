@@ -22,6 +22,7 @@ pub struct Execute<'info> {
     pub session_key: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [SEED_SESSION, session.owner.as_ref(), session_key.key().as_ref()],
         bump = session.bump,
     )]
@@ -58,33 +59,95 @@ impl<'info> Execute<'info> {
     pub fn execute_handler(
         &mut self,
         remaining_accounts: &'info [AccountInfo<'info>],
-        wrapped_ix: WrappedInstruction,
+        wrapped_ixs: Vec<WrappedInstruction>,
         policy_count: u8,
+        expected_nonce: Option<u64>,
+        manifest: Option<Vec<PolicyData>>,
     ) -> Result<()> {
         let clock = self.validate_session()?;
 
-        // Defense-in-depth: the wrapped CPI must never re-invoke Bastion itself
-        // (its privileged ix require owner/session_key signers the delegate lacks,
-        // but reject explicitly so no future ix can be reached via self-CPI).
-        require_keys_neq!(
-            wrapped_ix.program_id,
-            crate::ID,
-            BastionError::SelfCpiNotAllowed
-        );
+        // a batch must carry at least one leg.
+        require!(!wrapped_ixs.is_empty(), BastionError::EmptyBatch);
 
+        // optional ordering assertion for multi-tx sequences. `None` keeps
+        // the simple single-call path assertion-free; `Some(n)` rejects stale or
+        // out-of-order submissions (checked against the pre-increment nonce).
+        if let Some(n) = expected_nonce {
+            require!(n == self.session.action_nonce, BastionError::NonceMismatch);
+        }
+
+        // Policies + delegate + ix-account pool are collected once and shared by
+        // every leg (each leg's CompactAccountMeta indexes the same pool).
         let mut exec = self.collect_execution_context(remaining_accounts, policy_count)?;
 
-        self.validate_policies(&clock, &wrapped_ix, &exec)?;
+        // A holder-signed stateless manifest extends the policy set
+        // off-chain. Verify once: pinned hash + ed25519 binding (owner over the
+        // commitment) + every entry stateless.
+        let sysvar_ai = self.instructions_sysvar.to_account_info();
+        if let Some(m) = &manifest {
+            crate::utils::manifest::verify_manifest(
+                m,
+                &self.session.manifest_hash,
+                &self.session.owner,
+                &sysvar_ai,
+            )?;
+        }
 
-        self.pre_cpi_state_updates(&clock, &wrapped_ix, &mut exec)?;
+        // Each leg runs the full validate→charge→snapshot→CPI→enforce
+        // pipeline. Every leg executes inside this single instruction, so any leg
+        // failing reverts the whole batch — atomic, no partial intra-tx commit.
+        // Frequency/spend state mutates cumulatively (charged per leg = N
+        // back-to-back executes at the same timestamp).
+        for wrapped_ix in &wrapped_ixs {
+            // Defense-in-depth: the wrapped CPI must never re-invoke Bastion itself
+            // (its privileged ix require owner/session_key signers the delegate
+            // lacks, but reject explicitly so no future ix is reachable via self-CPI).
+            require_keys_neq!(
+                wrapped_ix.program_id,
+                crate::ID,
+                BastionError::SelfCpiNotAllowed
+            );
 
-        let snapshots = self.pre_cpi_snapshots(&wrapped_ix, &exec)?;
+            self.validate_policies(&clock, wrapped_ix, &exec)?;
 
-        let (metas, infos) = self.build_cpi_accounts(&wrapped_ix, &exec)?;
+            // Manifest (stateless) policies validate against each leg too.
+            if let Some(m) = &manifest {
+                for p in m {
+                    p.validate(&clock, wrapped_ix, exec.ix_accounts, &sysvar_ai)?;
+                }
+            }
 
-        self.invoke_wrapped_ix(&wrapped_ix, metas, infos)?;
+            self.pre_cpi_state_updates(&clock, wrapped_ix, &mut exec)?;
 
-        self.post_cpi_enforcement(&clock, &mut exec, &snapshots)?;
+            let snapshots = self.pre_cpi_snapshots(wrapped_ix, &exec)?;
+
+            let (metas, infos) = self.build_cpi_accounts(wrapped_ix, &exec)?;
+
+            self.invoke_wrapped_ix(wrapped_ix, metas, infos)?;
+
+            self.post_cpi_enforcement(&clock, &mut exec, &snapshots)?;
+        }
+
+        // One monotonic increment per execute (per tx, not per leg).
+        self.session.action_nonce = self
+            .session
+            .action_nonce
+            .checked_add(1)
+            .ok_or(BastionError::NumericalOverflow)?;
+
+        // Extend the tamper-evident audit chain over this batch. Commit to
+        // each leg's program_id + data (the meaningful payload; accounts are
+        // indices into the shared pool).
+        let mut batch_bytes: Vec<u8> = Vec::new();
+        for w in &wrapped_ixs {
+            batch_bytes.extend_from_slice(w.program_id.as_ref());
+            batch_bytes.extend_from_slice(&w.data);
+        }
+        self.session.chain_hash = crate::utils::hash::compute_chain_hash(
+            &self.session.chain_hash,
+            &batch_bytes,
+            self.session.action_nonce,
+        );
 
         Ok(())
     }

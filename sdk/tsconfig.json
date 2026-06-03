@@ -2,12 +2,13 @@
     "extends": "@workspace/typescript-config/library.json",
     "compilerOptions": {
         "outDir": "dist",
-        "rootDir": "src",
+        "rootDir": ".",
         "paths": {
             "@/*": ["./src/*"],
             "@bastion/idl": ["../target/idl/bastion.json"],
-            "@bastion/types": ["../target/types/bastion.ts"]
+            "@bastion/types": ["../target/types/bastion.ts"],
+            "@bastion/generated": ["./generated/index.ts"]
         }
     },
-    "include": ["src"]
+    "include": ["src", "scripts", "tests", "vitest.config.ts"]
 }

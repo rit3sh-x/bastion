@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AccountRole, type Address, type Instruction } from "@solana/kit";
-import { wrapInner } from "../src/execute";
+import { wrapInner } from "@/execute";
 
 const P1 = "11111111111111111111111111111111" as Address;
 const A1 = "So11111111111111111111111111111111111111112" as Address;

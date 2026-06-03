@@ -7,12 +7,89 @@ The codama-generated client (instruction builders, codecs, PDA derivers, error c
 ## Install
 
 ```bash
-pnpm add bastion @solana/kit @solana/program-client-core
+pnpm install
 ```
 
-`@solana/kit` and `@solana/program-client-core` are **peer dependencies** — bring your own. ESM-only.
+## Two-key model — holder & operator
 
-## Quick start
+Bastion separates **two keys that must never be combined** (full rationale in [`ARCHITECTURE.md`](../ARCHITECTURE.md#3-the-two-key-trust-model)):
+
+- **Holder** (`createHolderClient`) — holds the owner key, performs every admin op, and emits a shippable operator credential. Stays on your machine.
+- **Operator** (`createOperatorClient`) — reconstructed from the credential (session secret + owner **pubkey**, never the owner key). Can only `execute` + read.
+
+```ts
+import {
+    createHolderClient,
+    createOperatorClient,
+    serializeOperatorCredential,
+    parseOperatorCredential,
+    policyData,
+    asset,
+    windowKind,
+    sol,
+    days,
+    EMPTY_SPEND_STATE,
+} from "bastion";
+
+// --- HOLDER (owner machine) ---
+const holder = createHolderClient({
+    url: "https://api.devnet.solana.com",
+    wallet,
+});
+
+const { handle, operator } = await holder.openSession({
+    expiry: { secsFromNow: days(1) },
+    policies: [
+        policyData("ProgramAllowlist", { programs: [JUPITER] }),
+        policyData("SpendCap", {
+            asset: asset("NativeSol"),
+            window: windowKind("Fixed", { secs: days(1) }),
+            max: sol(50),
+            state: EMPTY_SPEND_STATE,
+        }),
+    ],
+    // allowance: { mint, amount },   // SPL: agent spends straight from the owner ATA
+});
+
+const credentialJson = serializeOperatorCredential(operator); // ship this to the agent
+
+// --- OPERATOR (agent host) ---
+const op = await createOperatorClient(parseOperatorCredential(credentialJson));
+
+await op.execute({ inner: swapIx }); // one atomic action
+await op.executeBatch({ inners: [approveIx, swapIx] }); // compound, all-or-nothing
+const seq = await op.executeSequence([ix1, ix2, ix3]); // ordered multi-tx, resumable
+if (seq.failedAt !== null) console.warn("stopped at", seq.failedAt);
+
+await handle.revoke(); // kill switch (holder)
+```
+
+The operator's default fee payer is the **session key itself** (fund it with a little SOL); pass `{ feePayer }` to use a relayer instead. The credential is `{ sessionSecret, sessionPda, owner, programId, policies[], rpcUrl, wsUrl? }` — JSON-serializable, owner secret never included.
+
+### Advanced: signed manifest
+
+Scale **stateless** policies off the account list by having the holder ed25519-sign them ([why](../ARCHITECTURE.md#9-scaling-axes)):
+
+```ts
+// HOLDER: sign + pin a stateless manifest
+const signed = await holder.signManifest([
+    policyData("ProgramAllowlist", { programs: [JUPITER] }),
+    policyData("TimeOfDayWindow", {
+        startMinute: 540,
+        endMinute: 1020,
+        daysMask: 0b0111110,
+    }),
+]);
+await handle.pinManifest(signed.manifestHash);
+// ship `signed` ({ policies, signature }) to the operator
+
+// OPERATOR: enforce it alongside the on-chain policies
+await op.execute({ inner: swapIx, manifest: signed });
+```
+
+The program verifies the ed25519 signature (owner over the pinned hash) via the precompile + introspection, and rejects any stateful policy in a manifest (those need on-chain accounts).
+
+## Lower-level: single handle
 
 ```ts
 import {

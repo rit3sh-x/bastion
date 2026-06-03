@@ -12,6 +12,7 @@ import {
     sol,
     tokens,
     type BastionErrorCode,
+    type OperatorClient,
     type SessionHandle,
 } from "bastion";
 import type Groq from "groq-sdk";
@@ -67,7 +68,11 @@ export interface ToolKit {
 
 const json = (v: unknown) => JSON.stringify(v);
 
-export function buildTools(session: SessionHandle, env: Env): ToolKit {
+export function buildTools(
+    handle: SessionHandle,
+    operator: OperatorClient,
+    env: Env
+): ToolKit {
     const mode = resolveSpendMode(env);
     const hasDest =
         env.swapDest !== undefined && env.swapDest !== SYSTEM_PROGRAM_ADDRESS;
@@ -95,7 +100,7 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
         unit: string
     ): Promise<Gated> {
         try {
-            const signature = await session.execute({ inner });
+            const signature = await operator.execute({ inner });
             return { ok: true, amount, unit, signature };
         } catch (e) {
             if (e instanceof BastionSdkError) {
@@ -114,10 +119,10 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
 
     async function gatedSolTransfer(amount: number): Promise<Gated> {
         const [delegate] = await pda.delegate(
-            session.owner,
-            session.sessionKey.address
+            handle.owner,
+            handle.sessionKey.address
         );
-        const dest = hasDest ? address(env.swapDest) : session.owner;
+        const dest = hasDest ? address(env.swapDest) : handle.owner;
         return runGated(
             buildTransferIx(delegate, dest, sol(amount)),
             amount,
@@ -137,10 +142,10 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
             };
         }
         const [delegate] = await pda.delegate(
-            session.owner,
-            session.sessionKey.address
+            handle.owner,
+            handle.sessionKey.address
         );
-        const source = await session.allowanceSource(mint);
+        const source = await handle.allowanceSource(mint);
         const dest = await associatedTokenAddress({
             owner: address(env.swapDest),
             mint,
@@ -225,7 +230,7 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
             function: {
                 name: "revoke",
                 description:
-                    "Kill switch — permanently revoke the Bastion session. After this no further actions execute. Confirm intent with the user before calling.",
+                    "Kill switch — permanently revoke the Bastion handle. After this no further actions execute. Confirm intent with the user before calling.",
                 parameters: {
                     type: "object",
                     properties: {
@@ -250,16 +255,16 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
             case "get_portfolio": {
                 toolTrace("get_portfolio");
                 const [state, policies, balance] = await Promise.all([
-                    session.state(),
-                    session.policies(),
-                    session.delegateBalance(),
+                    handle.state(),
+                    handle.policies(),
+                    handle.delegateBalance(),
                 ]);
                 const source = mode.mint
-                    ? await session.allowanceSource(mode.mint)
+                    ? await handle.allowanceSource(mode.mint)
                     : null;
                 return {
                     content: json({
-                        sessionPda: session.pubkey,
+                        sessionPda: handle.pubkey,
                         revoked: state.revoked,
                         expiry: state.expiry.toString(),
                         policyCount: policies.length,
@@ -291,7 +296,7 @@ export function buildTools(session: SessionHandle, env: Env): ToolKit {
                 const a = revokeArgs.parse(args);
                 toolTrace("revoke", a.reason);
                 try {
-                    const signature = await session.revoke();
+                    const signature = await handle.revoke();
                     return {
                         content: json({
                             ok: true,

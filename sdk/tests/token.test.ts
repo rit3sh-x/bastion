@@ -9,7 +9,7 @@ import {
     buildCreateAtaIdempotentIx,
     buildRevokeIx,
     buildTokenTransferIx,
-} from "../src/token";
+} from "@/token";
 
 const OWNER = "So11111111111111111111111111111111111111112" as Address;
 const MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" as Address;

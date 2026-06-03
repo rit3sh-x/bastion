@@ -24,14 +24,20 @@ import {
     getExecuteInstruction,
     getExtendSessionInstruction,
     getInitSessionInstruction,
+    getPinManifestInstruction,
     getRevokeSessionInstruction,
     getSweepDelegateInstruction,
     getUpdatePolicyInstruction,
     type Policy,
     type PolicyDataArgs,
     type Session,
-} from "./generated";
+} from "@bastion/generated";
 import type { ResolvedBastionConfig } from "./config";
+import {
+    buildCreateLookupTableInstruction,
+    buildExtendLookupTableInstruction,
+    deriveLookupTableAddress,
+} from "./alt";
 import { wrapSendError } from "./errors";
 import { planExecution, sendTx, wrapInner } from "./execute";
 import { withHooks } from "./hooks";
@@ -146,6 +152,11 @@ export interface SessionHandle {
     revoke(opts?: TxOpts): Promise<Signature>;
     close(opts?: TxOpts): Promise<Signature>;
     sweep(destination: Address, opts?: TxOpts): Promise<Signature>;
+    pinManifest(manifestHash: Uint8Array, opts?: TxOpts): Promise<Signature>;
+    createLookupTable(
+        extraAddresses?: readonly Address[],
+        opts?: TxOpts
+    ): Promise<Address>;
     execute(args: ExecuteArgs, opts?: TxOpts): Promise<Signature>;
     approveAllowance(
         args: { mint: Address; amount: bigint; tokenProgram?: Address },
@@ -431,10 +442,16 @@ function createSessionHandle(args: SessionHandleArgs): SessionHandle {
                         {
                             sessionKey,
                             session: pubkey,
-                            programId: wrapped.programId,
-                            accounts: wrapped.accounts,
-                            data: wrapped.data,
+                            wrappedIxs: [
+                                {
+                                    programId: wrapped.programId,
+                                    accounts: wrapped.accounts,
+                                    data: wrapped.data,
+                                },
+                            ],
                             policyCount: plan.policies.length,
+                            expectedNonce: null,
+                            manifest: null,
                         },
                         { programAddress: config.programId }
                     );
@@ -478,6 +495,54 @@ function createSessionHandle(args: SessionHandleArgs): SessionHandle {
                 (signature) => ({ signature }),
                 wrapSendError
             );
+        },
+
+        async createLookupTable(extraAddresses = [], opts) {
+            const recentSlot = await config.rpc
+                .getSlot({ commitment: "finalized" })
+                .send();
+            const [lookupTable, bump] = await deriveLookupTableAddress(
+                owner,
+                recentSlot
+            );
+            const policyAddrs = (await fetchPolicyAccounts()).map(
+                (p) => p.address
+            );
+            const [delegatePda] = await pda.delegate(owner, sessionKey.address);
+            const addresses = [...policyAddrs, delegatePda, ...extraAddresses];
+            const createIx = buildCreateLookupTableInstruction({
+                lookupTable,
+                authority: owner,
+                payer: owner,
+                recentSlot,
+                bump,
+            });
+            const extendIx = buildExtendLookupTableInstruction({
+                lookupTable,
+                authority: owner,
+                payer: owner,
+                addresses,
+            });
+            await send([createIx, extendIx], opts);
+            logger.info("lookupTable.created", {
+                op: "createLookupTable",
+                sessionPda: pubkey,
+                lookupTable,
+                size: addresses.length,
+            });
+            return lookupTable;
+        },
+
+        async pinManifest(manifestHash, opts) {
+            const ix = getPinManifestInstruction(
+                {
+                    owner: config.wallet,
+                    session: pubkey,
+                    manifestHash,
+                },
+                { programAddress: config.programId }
+            );
+            return send([ix], opts);
         },
 
         async allowanceSource(mint, tokenProgram) {
@@ -607,7 +672,13 @@ export function createSessionManager(
             let signature: Signature | undefined;
             return withHooks(
                 config.hooks,
-                { op: "open", sessionPda, owner, startedAt: Date.now(), expiry },
+                {
+                    op: "open",
+                    sessionPda,
+                    owner,
+                    startedAt: Date.now(),
+                    expiry,
+                },
                 async () => {
                     signature = await sendTx({
                         rpc: config.rpc,

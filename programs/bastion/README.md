@@ -2,8 +2,6 @@
 
 The Anchor program that enforces every policy at runtime. This README covers the program's architecture; for the whole-project pitch see the root [README](../../README.md).
 
-The program owns three account types (Session, Policy, Delegate), exposes 9 instructions, and enforces 24 policy kinds. The hot path — `execute` — runs a validate → pre-snapshot → CPI → post-charge pipeline that gates every wrapped instruction the session key tries to send.
-
 ---
 
 ## Account model
@@ -21,7 +19,9 @@ classDiagram
         +u64 next_seed
         +[32] policies_hash
         +u8 delegate_bump
-        +u8 version
+        +u64 action_nonce
+        +u8[32] chain_hash
+        +u8[32] manifest_hash
     }
 
     class Policy {
@@ -52,23 +52,26 @@ PDA seeds:
 | **Policy**   | `["policy", session, seed_le_u64]` (seed = `Session.next_seed` at attach time) |
 | **Delegate** | `["delegate", owner, session_key]` (bump cached on Session)                    |
 
-`Session.policies_hash` is a blake3 commitment over the sorted set of child Policy keys. `execute` rejects any caller that doesn't pass the exact set, in any order, that hashes to this commitment. That defends against an old / forged / partial policy set being substituted at call time.
+`Session.policies_hash` is a **SHA-256** commitment over the set of child Policy keys (blake3 is inactive on mainnet-feature-set validators). `execute` rejects any caller that doesn't pass the exact set that hashes to this commitment. That defends against an old / forged / partial policy set being substituted at call time. `Session.action_nonce` is a monotonic counter (one `+1` per `execute`) used for optional multi-tx ordering via `expected_nonce`.
+
+**Two-key model:** `init_session` enforces `session_key ≠ owner`. The owner (holder) is the only signer for every admin instruction; the session key (operator) can only call `execute`. See [ARCHITECTURE.md §3](../../ARCHITECTURE.md#3-the-two-key-trust-model).
 
 ---
 
 ## Instructions
 
-| Instruction      | Signer      | Purpose                                                                                                       |
-| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| `init_session`   | owner       | Create the Session PDA. Caches `delegate_bump` at init so `execute` skips a costly canonical-bump search.     |
-| `attach_policy`  | owner       | Append a Policy PDA at `next_seed`, re-hash, bump `policy_count`.                                             |
-| `update_policy`  | owner       | Replace `policy.data` in place; kind must be preserved (reuses the allocation; reallocs for new data length). |
-| `detach_policy`  | owner       | Close one Policy PDA, re-hash remaining set.                                                                  |
-| `revoke_session` | owner       | Idempotent flip of `session.revoked = true`. Disables `execute` immediately.                                  |
-| `extend_session` | owner       | Monotonically advance `session.expiry`. Rejects on revoked / already-expired / non-monotonic.                 |
-| `close_session`  | owner       | Close Session + every child Policy in one atomic tx. Owner must pass every child in `remaining_accounts`.     |
-| `sweep_delegate` | owner       | Drain Delegate lamports back to owner. Requires session to be revoked first.                                  |
-| `execute`        | session_key | Wrap an inner ix through the policy pipeline and CPI it via the Delegate PDA.                                 |
+| Instruction      | Signer      | Purpose                                                                                                                                                                                                                                                                                                                         |
+| ---------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init_session`   | owner       | Create the Session PDA. Caches `delegate_bump` at init so `execute` skips a costly canonical-bump search.                                                                                                                                                                                                                       |
+| `attach_policy`  | owner       | Append a Policy PDA at `next_seed`, re-hash, bump `policy_count`.                                                                                                                                                                                                                                                               |
+| `update_policy`  | owner       | Replace `policy.data` in place; kind must be preserved (reuses the allocation; reallocs for new data length).                                                                                                                                                                                                                   |
+| `detach_policy`  | owner       | Close one Policy PDA, re-hash remaining set.                                                                                                                                                                                                                                                                                    |
+| `revoke_session` | owner       | Idempotent flip of `session.revoked = true`. Disables `execute` immediately.                                                                                                                                                                                                                                                    |
+| `extend_session` | owner       | Monotonically advance `session.expiry`. Rejects on revoked / already-expired / non-monotonic.                                                                                                                                                                                                                                   |
+| `close_session`  | owner       | Close Session + every child Policy in one atomic tx. Owner must pass every child in `remaining_accounts`.                                                                                                                                                                                                                       |
+| `sweep_delegate` | owner       | Drain Delegate lamports back to owner. Requires session to be revoked first.                                                                                                                                                                                                                                                    |
+| `pin_manifest`   | owner       | Pin (or rotate) the commitment to a holder-signed stateless-policy manifest. Zero un-pins. (advanced tier)                                                                                                                                                                                                                      |
+| `execute`        | session_key | Wrap a **batch** of inner ixs through the policy pipeline and CPI each via the Delegate PDA. `execute(wrapped_ixs: Vec<WrappedInstruction>, policy_count, expected_nonce: Option<u64>, manifest: Option<Vec<PolicyData>>)` — atomic across legs; bumps `action_nonce`; advances `chain_hash`; optional ed25519-signed manifest. |
 
 ---
 
@@ -83,34 +86,39 @@ sequenceDiagram
     participant Pol as Policies
     participant CPI as Target program
 
-    SK->>Ex: execute(wrapped_ix, policy_count)
+    SK->>Ex: execute(wrapped_ixs, policy_count, expected_nonce)
 
     Note over Ex: validate_session
-    Ex->>Ex: !revoked, now <= expiry
+    Ex->>Ex: check revoked and expiry
+    Ex->>Ex: require non-empty batch
+    Ex->>Ex: verify expected_nonce matches action_nonce
 
-    Note over Ex: collect_execution_context
-    Ex->>Ex: load N policies, verify hash + count
-    Ex->>Ex: derive delegate, validate AccountInfo
+    Note over Ex: collect_execution_context (once, shared)
+    Ex->>Ex: load policies
+    Ex->>Ex: verify hash and count
+    Ex->>Ex: derive delegate and validate accounts
 
-    Note over Ex,Pol: validate_policies (pre-CPI, stateless)
-    loop each policy
-        Ex->>Pol: data.validate(clock, wrapped_ix, ix_accts, sysvar)
+    loop each leg in wrapped_ixs
+        Ex->>Ex: reject self CPI
+
+        Note over Ex,Pol: validate_policies (stateless)
+        Ex->>Pol: validate(clock, leg, ix_accts, sysvar)
+
+        Note over Ex,Pol: pre_cpi_state_updates
+        Pol->>Pol: charge rate limits and cooldowns
+
+        Note over Ex,Pol: pre_cpi_snapshots
+        Pol->>Pol: snapshot balances
+
+        Ex->>CPI: invoke_signed(delegate seeds)
+        CPI-->>Ex: success or failure
+
+        Note over Ex,Pol: post_cpi_enforcement
+        Pol->>Pol: enforce spend and balance limits
     end
 
-    Note over Ex,Pol: pre_cpi_state_updates (mutating, pre-CPI)
-    Pol->>Pol: RateLimit / Cooldown / MaxCallsTotal charge
-
-    Note over Ex,Pol: pre_cpi_snapshots
-    Pol->>Pol: snapshot delegate (or receiver) balances<br/>for spend-related policies
-
-    Ex->>CPI: invoke_signed(wrapped_ix, delegate seeds)
-    CPI-->>Ex: ok / revert (atomic)
-
-    Note over Ex,Pol: post_cpi_enforcement
-    Pol->>Pol: SpendCap / AmountPerCall<br/>PerCounterpartyCap / PerProgramSpendCap
-    Pol->>Pol: MinDelegateBalance floor (stateless)
-
-    Ex-->>SK: ok / revert
+    Ex->>Ex: increment action_nonce
+    Ex-->>SK: success or revert
 ```
 
 Why two phases for spend policies:
@@ -198,18 +206,19 @@ flowchart LR
 
 ## Errors
 
-46 error variant. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
+53 error variants. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
 
-| Category                    | Variants                                                                                                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Session lifecycle**       | `SessionRevoked`, `SessionExpired`, `SessionNotRevoked`, `NewExpiryNotGreater`, `SessionInvalidSigner`                                                                         |
-| **Policy bookkeeping**      | `ForeignPolicy`, `PolicyDisabled`, `PolicyHashMismatch`, `PolicyCountMismatch`, `PolicyTooMany`, `PolicyKindMismatch`, `InvalidPolicyData`, `InitialPolicyCountMismatch`       |
-| **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed` |
-| **Caps & floors**           | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded`     |
-| **Rate / time**             | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation`                                                                                                 |
-| **Ix shape**                | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`                    |
-| **Token / NFT parsing**     | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount`                                                                                                            |
-| **Infra**                   | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong`                                                                                                              |
+| Category                    | Variants                                                                                                                                                                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session lifecycle**       | `SessionRevoked`, `SessionExpired`, `SessionNotRevoked`, `NewExpiryNotGreater`, `SessionInvalidSigner`, `SessionKeyIsOwner`                                                                                     |
+| **Policy bookkeeping**      | `ForeignPolicy`, `PolicyDisabled`, `PolicyHashMismatch`, `PolicyCountMismatch`, `PolicyTooMany`, `PolicyKindMismatch`, `InvalidPolicyData`, `InitialPolicyCountMismatch`                                        |
+| **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed`                                  |
+| **Caps & floors**           | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded`                                      |
+| **Rate / time**             | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation`                                                                                                                                  |
+| **Ix shape / batch**        | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`, `SelfCpiNotAllowed`, `EmptyBatch`, `NonceMismatch` |
+| **Manifest (advanced)**     | `ManifestNotPinned`, `ManifestHashMismatch`, `ManifestSignatureInvalid`, `ManifestPolicyNotStateless`                                                                                                           |
+| **Token / NFT parsing**     | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount`                                                                                                                                             |
+| **Infra**                   | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong`                                                                                                                                               |
 
 ---
 
@@ -255,10 +264,10 @@ flowchart LR
 anchor build
 
 # Rust unit tests (counter math, hash, wire-format parsers, …)
-cargo test --lib                        # or: anchor run testunit
+anchor run testunit                     # or: anchor run testunit
 
 # Full integration suite (LiteSVM, ~120 tests across 33 files)
-cargo test --test '*'                   # or: anchor run testsvm
+anchor run testsvm                     # or: anchor run testsvm
 
 # A single test crate
 cargo test --test policy_spend_cap
@@ -268,5 +277,3 @@ cargo test --test execute_composition
 # A single test by name
 cargo test --test policy_rate_limit -- rate_limit_rolling_window
 ```
-
-> LiteSVM tests embed the compiled `target/deploy/bastion.so` via `include_bytes!`, so re-run `anchor build` whenever the program source changes before running integration tests.

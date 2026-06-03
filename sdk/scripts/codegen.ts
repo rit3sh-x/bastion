@@ -4,7 +4,6 @@ import { createFromRoot } from "codama";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
-// @ts-expect-error - Ignore missing declaration or attribute type errors for the IDL JSON import
 import idl from "@bastion/idl" with { type: "json" };
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -14,7 +13,7 @@ const codama = createFromRoot(rootNodeFromAnchor(idl as unknown as AnchorIdl));
 
 await codama.accept(
     renderVisitor(pkgRoot, {
-        generatedFolder: "src/generated",
+        generatedFolder: "generated",
         syncPackageJson: false,
         deleteFolderBeforeRendering: true,
         formatCode: true,
@@ -26,5 +25,5 @@ await codama.accept(
 );
 
 console.log(
-    `[codegen] wrote kit-native client to ${resolve(pkgRoot, "src/generated")}`
+    `[codegen] wrote kit-native client to ${resolve(pkgRoot, "generated")}`
 );

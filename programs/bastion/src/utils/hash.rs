@@ -29,11 +29,32 @@ pub fn compute_policies_hash(keys: &[Pubkey]) -> [u8; 32] {
     solana_sha256_hasher::hashv(&refs).to_bytes()
 }
 
+/// Tamper-evident audit chain: links each `execute` to the previous via
+/// `sha256(prev_hash || wrapped_ixs_bytes || nonce_le)`.
+pub fn compute_chain_hash(prev: &[u8; 32], batch_bytes: &[u8], nonce: u64) -> [u8; 32] {
+    solana_sha256_hasher::hashv(&[prev, batch_bytes, &nonce.to_le_bytes()]).to_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::pk;
 
     use super::*;
+
+    #[test]
+    fn chain_hash_links_and_changes() {
+        let genesis = EMPTY_POLICIES_HASH;
+        let h1 = compute_chain_hash(&genesis, b"leg-a", 1);
+        let h2 = compute_chain_hash(&h1, b"leg-b", 2);
+        // each link depends on the previous + payload + nonce
+        assert_ne!(h1, genesis);
+        assert_ne!(h2, h1);
+        // deterministic
+        assert_eq!(h1, compute_chain_hash(&genesis, b"leg-a", 1));
+        // a different nonce or payload breaks the link
+        assert_ne!(h1, compute_chain_hash(&genesis, b"leg-a", 2));
+        assert_ne!(h1, compute_chain_hash(&genesis, b"leg-x", 1));
+    }
 
     #[test]
     fn empty_returns_sentinel() {
