@@ -5,7 +5,7 @@ import {
 } from "@solana/kit";
 import { createBastion, type CreateBastionConfigByUrl } from "./bastion";
 import { BastionSdkError } from "./errors";
-import type { PolicyDataArgs } from "@bastion/generated";
+import type { PolicyDataArgs } from "./generated";
 import {
     signManifest as signManifestBytes,
     type SignedManifest,

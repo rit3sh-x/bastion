@@ -13,7 +13,7 @@ const codama = createFromRoot(rootNodeFromAnchor(idl as unknown as AnchorIdl));
 
 await codama.accept(
     renderVisitor(pkgRoot, {
-        generatedFolder: "generated",
+        generatedFolder: "src/generated",
         syncPackageJson: false,
         deleteFolderBeforeRendering: true,
         formatCode: true,
@@ -25,5 +25,5 @@ await codama.accept(
 );
 
 console.log(
-    `[codegen] wrote kit-native client to ${resolve(pkgRoot, "generated")}`
+    `[codegen] wrote kit-native client to ${resolve(pkgRoot, "src/generated")}`
 );

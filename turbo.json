@@ -11,10 +11,10 @@
             "env": ["RPC"]
         },
         "typecheck": {
-            "dependsOn": ["^typecheck"]
+            "dependsOn": ["build", "^build", "^typecheck"]
         },
         "test": {
-            "dependsOn": ["^build"],
+            "dependsOn": ["build", "^build"],
             "outputs": []
         }
     }

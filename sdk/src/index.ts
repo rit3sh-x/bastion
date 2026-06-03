@@ -154,6 +154,6 @@ export {
     EMPTY_COUNTER_STATE,
 } from "./helpers";
 
-export * from "@bastion/generated";
+export * from "./generated";
 
-export type { WrappedInstructionArgs as WrappedInstruction } from "@bastion/generated";
+export type { WrappedInstructionArgs as WrappedInstruction } from "./generated";

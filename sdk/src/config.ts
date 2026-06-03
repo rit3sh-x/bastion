@@ -1,5 +1,5 @@
 import type { Address, Commitment, Rpc, SolanaRpcApi } from "@solana/kit";
-import { BASTION_PROGRAM_ADDRESS } from "@bastion/generated";
+import { BASTION_PROGRAM_ADDRESS } from "./generated";
 import { BastionSdkError } from "./errors";
 import type { BastionHooks } from "./hooks";
 import type { LoggerConfig } from "./logger";

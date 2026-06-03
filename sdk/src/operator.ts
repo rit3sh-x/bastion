@@ -22,7 +22,7 @@ import {
     getExecuteInstruction,
     type Policy,
     type Session,
-} from "@bastion/generated";
+} from "./generated";
 import {
     planExecution,
     sendTx,

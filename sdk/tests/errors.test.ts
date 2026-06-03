@@ -5,7 +5,7 @@ import {
     SESSION_EXPIRED,
     SESSION_REVOKED,
     SPEND_CAP_EXCEEDED,
-} from "@bastion/generated";
+} from "@/generated";
 import { BastionSdkError, parseProgramError, wrapSendError } from "@/errors";
 
 describe("parseProgramError — Anchor format", () => {

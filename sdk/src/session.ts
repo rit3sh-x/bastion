@@ -31,7 +31,7 @@ import {
     type Policy,
     type PolicyDataArgs,
     type Session,
-} from "@bastion/generated";
+} from "./generated";
 import type { ResolvedBastionConfig } from "./config";
 import {
     buildCreateLookupTableInstruction,

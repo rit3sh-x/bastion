@@ -3,7 +3,7 @@ import {
     SESSION_REVOKED,
     MANIFEST_POLICY_NOT_STATELESS,
     type BastionError,
-} from "@bastion/generated";
+} from "./generated";
 
 export type SdkInternalReason =
     | "InvalidConfig"

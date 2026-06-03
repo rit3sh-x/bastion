@@ -5,7 +5,7 @@ import {
     computeManifestHash,
     ED25519_PROGRAM_ADDRESS,
 } from "@/manifest";
-import { policyData } from "@bastion/generated";
+import { policyData } from "@/generated";
 
 const SYS = address("11111111111111111111111111111111");
 

@@ -4,7 +4,7 @@ import {
     type Address,
     type Instruction,
 } from "@solana/kit";
-import { getPolicyDataEncoder, type PolicyDataArgs } from "@bastion/generated";
+import { getPolicyDataEncoder, type PolicyDataArgs } from "./generated";
 
 export const ED25519_PROGRAM_ADDRESS =
     "Ed25519SigVerify111111111111111111111111111" as Address;

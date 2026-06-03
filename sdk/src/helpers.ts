@@ -1,4 +1,4 @@
-import type { CounterState, SpendState } from "@bastion/generated";
+import type { CounterState, SpendState } from "./generated";
 
 const LAMPORTS_PER_SOL = 1_000_000_000n;
 

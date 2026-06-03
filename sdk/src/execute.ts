@@ -29,7 +29,7 @@ import {
     fetchAllPolicy,
     type CompactAccountMeta,
     type Policy,
-} from "@bastion/generated";
+} from "./generated";
 import { wrapSendError } from "./errors";
 
 const BASTION_FLAG_SIGNER = 0b01;

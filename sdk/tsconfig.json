@@ -7,7 +7,6 @@
             "@/*": ["./src/*"],
             "@bastion/idl": ["../target/idl/bastion.json"],
             "@bastion/types": ["../target/types/bastion.ts"],
-            "@bastion/generated": ["./generated/index.ts"]
         }
     },
     "include": ["src", "scripts", "tests", "vitest.config.ts"]
