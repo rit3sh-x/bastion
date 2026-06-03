@@ -56,11 +56,22 @@ pub mod bastion {
 
     pub fn execute<'info>(
         ctx: Context<'info, Execute<'info>>,
-        wrapped_ix: WrappedInstruction,
+        wrapped_ixs: Vec<WrappedInstruction>,
         policy_count: u8,
+        expected_nonce: Option<u64>,
+        manifest: Option<Vec<PolicyData>>,
     ) -> Result<()> {
-        ctx.accounts
-            .execute_handler(ctx.remaining_accounts, wrapped_ix, policy_count)
+        ctx.accounts.execute_handler(
+            ctx.remaining_accounts,
+            wrapped_ixs,
+            policy_count,
+            expected_nonce,
+            manifest,
+        )
+    }
+
+    pub fn pin_manifest(ctx: Context<PinManifest>, manifest_hash: [u8; 32]) -> Result<()> {
+        ctx.accounts.pin_manifest_handler(manifest_hash)
     }
 
     pub fn update_policy(

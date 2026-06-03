@@ -19,7 +19,7 @@ import {
     T,
     EMPTY_SPEND_STATE,
     EMPTY_COUNTER_STATE,
-} from "../src/helpers";
+} from "@/helpers";
 
 describe("sol()", () => {
     it("integer → 10^9 lamports", () => {

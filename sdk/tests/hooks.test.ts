@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Address, Signature } from "@solana/kit";
-import { withHooks, type BastionHooks } from "../src/hooks";
-import { BastionSdkError } from "../src/errors";
-import { wrapSendError } from "../src/errors";
+import { withHooks, type BastionHooks } from "@/hooks";
+import { BastionSdkError } from "@/errors";
+import { wrapSendError } from "@/errors";
 
 const SESSION = "11111111111111111111111111111111" as Address;
 const OWNER = "So11111111111111111111111111111111111111112" as Address;

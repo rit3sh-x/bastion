@@ -33,9 +33,9 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    const { session } = await openSession(env);
+    const { handle, operator } = await openSession(env);
     const groq = new Groq({ apiKey: env.groqApiKey });
-    const tools = buildTools(session, env);
+    const tools = buildTools(handle, operator, env);
     const agent = new Agent(
         groq,
         env.model,

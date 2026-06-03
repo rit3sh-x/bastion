@@ -142,4 +142,25 @@ pub enum BastionError {
 
     #[msg("Wrapped instruction may not re-invoke the Bastion program itself")]
     SelfCpiNotAllowed,
+
+    #[msg("session_key must differ from owner")]
+    SessionKeyIsOwner,
+
+    #[msg("execute batch must contain at least one wrapped instruction")]
+    EmptyBatch,
+
+    #[msg("expected_nonce does not match session.action_nonce")]
+    NonceMismatch,
+
+    #[msg("no manifest is pinned for this session")]
+    ManifestNotPinned,
+
+    #[msg("manifest does not match session.manifest_hash")]
+    ManifestHashMismatch,
+
+    #[msg("manifest is missing a holder ed25519 signature, or the signer is not the owner")]
+    ManifestSignatureInvalid,
+
+    #[msg("manifest may only contain stateless policies")]
+    ManifestPolicyNotStateless,
 }

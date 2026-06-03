@@ -244,6 +244,31 @@ impl PolicyData {
         }
     }
 
+    /// True for `validate()`-only policies — no persisted state, no pre/post
+    /// balance delta. Only these may live in a signed manifest: the
+    /// stateful kinds need on-chain accounts to track counters/spend.
+    pub fn is_stateless(&self) -> bool {
+        matches!(
+            self,
+            PolicyData::ProgramAllowlist { .. }
+                | PolicyData::ProgramBlocklist { .. }
+                | PolicyData::MintAllowlist { .. }
+                | PolicyData::MintBlocklist { .. }
+                | PolicyData::NftCollectionAllowlist { .. }
+                | PolicyData::NftCollectionBlocklist { .. }
+                | PolicyData::NftCreatorAllowlist { .. }
+                | PolicyData::IxDiscriminatorAllowlist { .. }
+                | PolicyData::Expiry { .. }
+                | PolicyData::ForeignSignerNotAllowed
+                | PolicyData::TimeOfDayWindow { .. }
+                | PolicyData::MaxIxSize { .. }
+                | PolicyData::NoAccountClose
+                | PolicyData::RequireMemo { .. }
+                | PolicyData::MaxComputeUnits { .. }
+                | PolicyData::MaxPriorityFee { .. }
+        )
+    }
+
     pub fn kind(&self) -> PolicyKind {
         match self {
             PolicyData::ProgramAllowlist { .. } => PolicyKind::ProgramAllowlist,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Address } from "@solana/kit";
-import { pda, MPL_TOKEN_METADATA_ADDRESS } from "../src/session";
+import { pda, MPL_TOKEN_METADATA_ADDRESS } from "@/session";
 
 const OWNER = "So11111111111111111111111111111111111111112" as Address;
 const SESSION_KEY = "11111111111111111111111111111111" as Address;

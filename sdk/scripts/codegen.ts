@@ -4,7 +4,6 @@ import { createFromRoot } from "codama";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
-// @ts-expect-error - Ignore missing declaration or attribute type errors for the IDL JSON import
 import idl from "@bastion/idl" with { type: "json" };
 
 const here = dirname(fileURLToPath(import.meta.url));

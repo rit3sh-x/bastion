@@ -41,6 +41,11 @@ impl<'info> InitSession<'info> {
 
         let owner_key = self.owner.key();
 
+        // A distributable operator (session_key) must never equal the holder
+        // (owner) — else the shipped operator credential would be able to sign
+        // owner transfers directly and bypass Bastion entirely.
+        require_keys_neq!(args.session_key, owner_key, BastionError::SessionKeyIsOwner);
+
         let (_delegate_pda, delegate_bump) = Pubkey::find_program_address(
             &[SEED_DELEGATE, owner_key.as_ref(), args.session_key.as_ref()],
             &crate::ID,
@@ -57,6 +62,9 @@ impl<'info> InitSession<'info> {
             next_seed: 0,
             policies_hash: EMPTY_POLICIES_HASH,
             delegate_bump,
+            action_nonce: 0,
+            chain_hash: [0u8; 32],
+            manifest_hash: [0u8; 32],
         });
 
         Ok(())

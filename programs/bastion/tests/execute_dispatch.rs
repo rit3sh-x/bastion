@@ -196,7 +196,7 @@ fn execute_rejects_too_many_policies() {
     let (session_pda, session_kp) = init_session(&mut svm, &owner, 3600).expect("init");
     airdrop(&mut svm, &session_kp.pubkey(), ONE_SOL);
 
-    let fakes: Vec<Pubkey> = (0..17).map(|_| Pubkey::new_unique()).collect();
+    let fakes: Vec<Pubkey> = (0..33).map(|_| Pubkey::new_unique()).collect();
     let metas: Vec<AccountMeta> = fakes
         .iter()
         .map(|p| AccountMeta::new_readonly(*p, false))
@@ -206,7 +206,7 @@ fn execute_rejects_too_many_policies() {
         &session_kp,
         &session_pda,
         empty_wrapped_ix(),
-        17,
+        33,
         &metas,
     );
     assert_svm_anchor_error(res, BastionError::PolicyTooMany);
@@ -234,7 +234,7 @@ fn execute_rejects_foreign_signer_in_wrapped_ix() {
     let wix = WrappedInstruction {
         program_id: anchor_lang::system_program::ID,
         accounts: vec![
-            CompactAccountMeta::new(0, /*signer*/ true, /*writable*/ true),
+            CompactAccountMeta::new(0, true, true),
             CompactAccountMeta::new(1, false, true),
         ],
         data,

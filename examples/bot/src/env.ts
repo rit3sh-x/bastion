@@ -12,6 +12,7 @@ export interface Env {
     mintDecimals: number;
     tokenSymbol: string;
     allowanceTokens: number;
+    credPath: string;
 }
 
 export function loadEnv(): Env {
@@ -29,5 +30,6 @@ export function loadEnv(): Env {
         mintDecimals: Number(process.env.DECIMALS ?? "6"),
         tokenSymbol: process.env.TOKEN_SYMBOL ?? "TOKEN",
         allowanceTokens: Number(process.env.ALLOWANCE ?? "1000"),
+        credPath: process.env.OPERATOR_CRED_PATH ?? ".bastion-operator.json",
     };
 }

@@ -1,0 +1,152 @@
+name: Tests
+
+on:
+    push:
+    pull_request:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: tests-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    rust:
+        name: Build + Rust tests (unit + LiteSVM)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install Rust
+              uses: dtolnay/rust-toolchain@1.89.0
+
+            - name: Cache cargo
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install Solana CLI
+              run: |
+                  sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
+                  echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+            - name: Install Anchor
+              run: |
+                  cargo install --git https://github.com/solana-foundation/anchor --tag v0.32.1 avm --force
+                  avm install 1.0.2
+                  avm use 1.0.2
+
+            - name: Generate keypair
+              run: |
+                  anchor keys sync
+
+            - name: Build .so + IDL
+              run: |
+                  anchor build
+
+            - name: Rust tests (lib + LiteSVM integration)
+              run: anchor run testall
+
+            - name: Upload program artifact (.so + IDL)
+              uses: actions/upload-artifact@v4
+              with:
+                  name: program-build
+                  path: |
+                      target/deploy/bastion.so
+                      target/idl/bastion.json
+                      target/deploy/bastion-keypair.json
+                  retention-days: 1
+                  if-no-files-found: error
+
+    sdk-bot:
+        name: SDK & Bot tests
+        needs: rust
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Download program artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: program-build
+                  path: target
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                  version: 11.2.2
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Install deps (codegen reads the downloaded IDL)
+              run: pnpm install --frozen-lockfile
+
+            - name: Build SDK
+              run: pnpm build
+
+            - name: SDK typecheck + tests
+              run: |
+                  pnpm typecheck
+                  pnpm test
+
+    e2e:
+        name: E2E (local validator)
+        needs: rust
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Download program artifact
+              uses: actions/download-artifact@v4
+              with:
+                  name: program-build
+                  path: target
+
+            - name: Install Solana
+              run: |
+                  sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
+                  echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                  version: 11.2.2
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Install deps + build SDK
+              run: |
+                  pnpm install --frozen-lockfile
+                  pnpm -F bastion build
+
+            - name: Run validator + e2e
+              run: |
+                  PROGRAM_ID=$(solana address -k target/deploy/bastion-keypair.json)
+
+                  echo "Program ID: $PROGRAM_ID"
+
+                  solana-test-validator --reset \
+                    --ledger /tmp/ledger \
+                    --bpf-program "$PROGRAM_ID" target/deploy/bastion.so \
+                    --rpc-port 8899 > /tmp/validator.log 2>&1 &
+
+                  echo "waiting for validator..."
+                  for i in $(seq 1 60); do
+                    if solana cluster-version -u http://127.0.0.1:8899 >/dev/null 2>&1; then
+                      echo "validator ready after ${i}s"
+                      break
+                    fi
+                    sleep 1
+                  done
+
+                  RPC_URL=http://127.0.0.1:8899 \
+                  WS_URL=ws://127.0.0.1:8900 \
+                  PROGRAM_ID=$PROGRAM_ID \
+                  pnpm -F @examples/bot exec tsx scripts/e2e-live.ts

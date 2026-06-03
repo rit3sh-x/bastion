@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLogger, type LogEntry } from "../src/logger";
+import { createLogger, type LogEntry } from "@/logger";
 
 describe("createLogger — level threshold", () => {
     it("default level is 'info'", () => {

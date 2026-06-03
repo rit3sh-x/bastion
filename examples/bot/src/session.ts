@@ -1,28 +1,32 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+import { getBase58Encoder } from "@solana/kit";
 import {
-    createBastion,
-    pda,
+    createHolderClient,
+    createOperatorClient,
+    parseOperatorCredential,
+    serializeOperatorCredential,
+    sessionKeyFromSecret,
     tokens,
-    type Bastion,
     type BastionHooks,
+    type HolderClient,
+    type OperatorClient,
+    type OperatorCredential,
     type SessionHandle,
 } from "bastion";
 
 import type { Env } from "./env";
 import { buildPolicies, LIMITS, resolveSpendMode } from "./policies";
 import { log, toolTrace, warn } from "./ui";
-import { loadOwnerSigner, loadSessionSigner } from "./wallet";
+import { loadOwnerSigner } from "./wallet";
 
 export interface AgentContext {
-    bastion: Bastion;
-    session: SessionHandle;
+    handle: SessionHandle;
+    operator: OperatorClient;
 }
 
-export async function openSession(env: Env): Promise<AgentContext> {
-    const wallet = await loadOwnerSigner(env.ownerSecretB58);
-    const sessionKey = await loadSessionSigner(env.sessionSecretB58);
-    log(`owner:   ${wallet.address}`);
-
-    const hooks: BastionHooks = {
+function hooks(): BastionHooks {
+    return {
         before(ctx) {
             toolTrace(`bastion:${ctx.op}`, "…");
         },
@@ -30,75 +34,98 @@ export async function openSession(env: Env): Promise<AgentContext> {
             warn(`bastion:${ctx.op} → ${ctx.error.code}`);
         },
     };
+}
 
-    const bastion = createBastion({
+async function reuseExisting(
+    holder: HolderClient,
+    credPath: string
+): Promise<AgentContext | undefined> {
+    if (!existsSync(credPath)) return undefined;
+    let cred: OperatorCredential;
+    try {
+        cred = parseOperatorCredential(readFileSync(credPath, "utf8"));
+    } catch {
+        return undefined;
+    }
+    const sessionKey = await sessionKeyFromSecret(
+        new Uint8Array(getBase58Encoder().encode(cred.sessionSecret))
+    );
+    const handle = holder.hydrate({ pubkey: cred.sessionPda, sessionKey });
+    try {
+        const state = await handle.state();
+        if (state.revoked) return undefined;
+    } catch {
+        return undefined;
+    }
+    log(`rehydrated session ${cred.sessionPda} from ${credPath}`);
+    return { handle, operator: await createOperatorClient(cred) };
+}
+
+export async function openSession(env: Env): Promise<AgentContext> {
+    const wallet = await loadOwnerSigner(env.ownerSecretB58);
+    log(`owner:   ${wallet.address}`);
+
+    const holder = createHolderClient({
         url: env.rpcUrl,
         ...(env.wsUrl ? { wsUrl: env.wsUrl } : {}),
         wallet,
-        hooks,
+        hooks: hooks(),
         logger: { level: "warn" },
     });
 
-    const mode = resolveSpendMode(env);
-    const openArgs = sessionKey
-        ? { expiry: { secsFromNow: LIMITS.sessionDurationSecs }, sessionKey }
-        : { expiry: { secsFromNow: LIMITS.sessionDurationSecs } };
-
-    const openAndAttach = async (): Promise<SessionHandle> => {
-        const opened = await bastion.session.open(openArgs);
-        const policies = buildPolicies(mode);
-        await opened.attachMany(policies);
-        log(`${policies.length} policies attached (${mode.symbol} caps)`);
-        return opened;
-    };
-
-    let session: SessionHandle;
-    if (sessionKey) {
-        const [sessionPda] = await pda.session(
-            wallet.address,
-            sessionKey.address
-        );
-        session = bastion.session.hydrate({ pubkey: sessionPda, sessionKey });
-        try {
-            await session.state();
-            log(`rehydrated existing session ${sessionPda}`);
-        } catch {
-            log("opening new session + attaching policies…");
-            session = await openAndAttach();
-        }
-    } else {
-        log("opening new session (SDK-generated key) + attaching policies…");
-        session = await openAndAttach();
+    const reused = await reuseExisting(holder, env.credPath);
+    if (reused) {
+        await reportFunding(reused, env);
+        return reused;
     }
 
-    log(`session: ${session.pubkey}  (key ${session.sessionKey.address})`);
-    const [delegate] = await pda.delegate(
-        wallet.address,
-        session.sessionKey.address
-    );
+    const mode = resolveSpendMode(env);
+    const policies = buildPolicies(mode);
+    const allowance = mode.mint
+        ? {
+              mint: mode.mint,
+              amount: tokens(env.allowanceTokens, mode.decimals),
+          }
+        : undefined;
 
+    log("opening new session + attaching policies…");
+    const { handle, operator: cred } = await holder.openSession({
+        expiry: { secsFromNow: LIMITS.sessionDurationSecs },
+        policies,
+        ...(allowance ? { allowance } : {}),
+    });
+    writeFileSync(env.credPath, serializeOperatorCredential(cred));
+    log(`${policies.length} policies attached (${mode.symbol} caps)`);
+    log(`session: ${cred.sessionPda}`);
+    log(`operator credential (ship this) → ${env.credPath}`);
+
+    const ctx: AgentContext = {
+        handle,
+        operator: await createOperatorClient(cred),
+    };
+    await reportFunding(ctx, env);
+    return ctx;
+}
+
+async function reportFunding(ctx: AgentContext, env: Env): Promise<void> {
+    const mode = resolveSpendMode(env);
     if (mode.mint) {
         try {
-            const { source, delegate: del } = await session.approveAllowance({
-                mint: mode.mint,
-                amount: tokens(env.allowanceTokens, mode.decimals),
-            });
+            const source = await ctx.handle.allowanceSource(mode.mint);
             log(
-                `allowance approved: delegate ${del} may spend up to ${env.allowanceTokens} ${mode.symbol} from your ATA ${source}\n`
+                `allowance mode: agent spends up to ${env.allowanceTokens} ${mode.symbol} from your ATA ${source}\n`
             );
         } catch (e) {
             warn(
-                `approveAllowance failed — does your ${mode.symbol} ATA exist and hold tokens? ${
+                `allowanceSource lookup failed: ${
                     e instanceof Error ? e.message : String(e)
                 }`
             );
         }
     } else {
-        const bal = Number(await session.delegateBalance()) / 1e9;
+        const bal = Number(await ctx.handle.delegateBalance()) / 1e9;
         log(
-            `delegate ${delegate} — balance ${bal} SOL  (fund this to enable spends)\n`
+            `vault mode: delegate balance ${bal} SOL  (fund the delegate to enable spends)\n`
         );
     }
-
-    return { bastion, session };
 }
