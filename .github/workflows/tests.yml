@@ -146,9 +146,6 @@ jobs:
                     sleep 1
                   done
 
-                  solana program show "$PROGRAM_ID" \
-                    -u http://127.0.0.1:8899
-
                   RPC_URL=http://127.0.0.1:8899 \
                   WS_URL=ws://127.0.0.1:8900 \
                   PROGRAM_ID=$PROGRAM_ID \
