@@ -1,9 +1,5 @@
-import {
-    getBastionErrorMessage,
-    SESSION_REVOKED,
-    MANIFEST_POLICY_NOT_STATELESS,
-    type BastionError,
-} from "./generated";
+import type { BastionError } from "./generated";
+import * as BastionErrors from "./generated/errors";
 
 export type SdkInternalReason =
     | "InvalidConfig"
@@ -63,15 +59,18 @@ export class BastionSdkError extends Error {
     }
 }
 
-const FIRST_CODE = SESSION_REVOKED;
-const LAST_CODE = MANIFEST_POLICY_NOT_STATELESS;
+const BASTION_ERROR_CODES: ReadonlySet<number> = new Set(
+    (Object.values(BastionErrors) as unknown[]).filter(
+        (v): v is number => typeof v === "number"
+    )
+);
 
 function isBastionCode(n: number): boolean {
-    return Number.isInteger(n) && n >= FIRST_CODE && n <= LAST_CODE;
+    return BASTION_ERROR_CODES.has(n);
 }
 
 function messageForCode(code: number, alt: string): string {
-    const m = getBastionErrorMessage(code as BastionError);
+    const m = BastionErrors.getBastionErrorMessage(code as BastionError);
     return m && !m.startsWith("Error message not available") ? m : alt;
 }
 
