@@ -22,7 +22,7 @@
     },
     "scripts": {
         "codegen": "tsx ./scripts/codegen.ts",
-        "build": "tsc",
+        "build": "tsc -p tsconfig.build.json",
         "typecheck": "tsc --noEmit",
         "lint": "eslint .",
         "test": "vitest run",
