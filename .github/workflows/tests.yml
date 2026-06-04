@@ -16,24 +16,50 @@ jobs:
         name: Build + Rust tests (unit + LiteSVM)
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
             - name: Install Rust
-              uses: dtolnay/rust-toolchain@1.89.0
+              uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e # 1.89.0
 
             - name: Cache cargo
-              uses: Swatinem/rust-cache@v2
+              uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+            - name: Cache Solana CLI
+              id: solana-cache
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: ~/.local/share/solana
+                  key: solana-${{ runner.os }}-3.1.14
 
             - name: Install Solana CLI
+              if: steps.solana-cache.outputs.cache-hit != 'true'
               run: |
                   sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
+
+            - name: Add Solana to PATH
+              run: |
                   echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
+            - name: Cache AVM + Anchor
+              id: anchor-cache
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: |
+                      ~/.avm
+                      ~/.cargo/bin/anchor
+                      ~/.cargo/bin/avm
+                  key: anchor-${{ runner.os }}-1.0.2
+
             - name: Install Anchor
+              if: steps.anchor-cache.outputs.cache-hit != 'true'
               run: |
                   cargo install --git https://github.com/solana-foundation/anchor --tag v0.32.1 avm --force
                   avm install 1.0.2
+
+            - name: Select Anchor Version
+              run: |
                   avm use 1.0.2
+                  anchor --version
 
             - name: Generate keypair
               run: |
@@ -47,7 +73,7 @@ jobs:
               run: anchor run testall
 
             - name: Upload program artifact (.so + IDL)
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
               with:
                   name: program-build
                   path: |
@@ -61,31 +87,56 @@ jobs:
         name: SDK & Bot tests
         needs: rust
         runs-on: ubuntu-latest
+
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
             - name: Download program artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
               with:
                   name: program-build
                   path: target
 
             - name: Setup pnpm
-              uses: pnpm/action-setup@v4
+              uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
               with:
                   version: 11.2.2
 
             - name: Setup Node
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
               with:
                   node-version: 22
                   cache: pnpm
 
-            - name: Install deps (codegen reads the downloaded IDL)
-              run: pnpm install --frozen-lockfile
+            - name: Get pnpm store path
+              id: pnpm-store
+              run: |
+                  echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+            - name: Cache pnpm store
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+                  key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+                  restore-keys: |
+                      pnpm-store-${{ runner.os }}-
+
+            - name: Cache turbo
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: .turbo
+                  key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json', '**/package.json') }}
+                  restore-keys: |
+                      turbo-${{ runner.os }}-${{ github.ref_name }}-
+                      turbo-${{ runner.os }}-
+
+            - name: Install deps
+              run: |
+                  pnpm install --frozen-lockfile
 
             - name: Build SDK
-              run: pnpm build
+              run: |
+                  pnpm build
 
             - name: SDK typecheck + tests
               run: |
@@ -96,30 +147,64 @@ jobs:
         name: E2E (local validator)
         needs: rust
         runs-on: ubuntu-latest
+
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
             - name: Download program artifact
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
               with:
                   name: program-build
                   path: target
 
-            - name: Install Solana
+            - name: Cache Solana CLI
+              id: solana-cache
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: ~/.local/share/solana
+                  key: solana-${{ runner.os }}-3.1.14
+
+            - name: Install Solana CLI
+              if: steps.solana-cache.outputs.cache-hit != 'true'
               run: |
                   sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
+
+            - name: Add Solana to PATH
+              run: |
                   echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
             - name: Setup pnpm
-              uses: pnpm/action-setup@v4
+              uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
               with:
                   version: 11.2.2
 
             - name: Setup Node
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
               with:
                   node-version: 22
                   cache: pnpm
+
+            - name: Get pnpm store path
+              id: pnpm-store
+              run: |
+                  echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+            - name: Cache pnpm store
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+                  key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+                  restore-keys: |
+                      pnpm-store-${{ runner.os }}-
+
+            - name: Cache turbo
+              uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+              with:
+                  path: .turbo
+                  key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json', '**/package.json') }}
+                  restore-keys: |
+                      turbo-${{ runner.os }}-${{ github.ref_name }}-
+                      turbo-${{ runner.os }}-
 
             - name: Install deps + build SDK
               run: |
