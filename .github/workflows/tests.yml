@@ -38,7 +38,7 @@ jobs:
 
             - name: Add Solana to PATH
               run: |
-                  echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH
+                  echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
             - name: Cache AVM + Anchor
               id: anchor-cache
