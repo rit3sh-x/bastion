@@ -245,6 +245,47 @@ policyData("MaxComputeUnits", {
 
 Unit helpers — `sol`, `lamports`, `microLamports`, `tokens`, `seconds`, `minutes`, `hours`, `days`, `weeks` — and the empty-state constants `EMPTY_SPEND_STATE` / `EMPTY_COUNTER_STATE` are also exported from `bastion`.
 
+### Safe defaults & native-SOL allowance
+
+Two conveniences sit alongside the raw `policyData(...)` factories:
+
+- **`safeDefaultPolicies()`** — a deny-by-default bundle `[TokenAuthorityGuard, NoAccountClose]`. Spend caps watch a token account's `amount`, but SPL/Token-2022 `approve` / `approveChecked` / `setAuthority` / `closeAccount` change _authority_ without changing `amount`, so a cap never fires and the funds leave on a later, un-gated tx. Attach this whenever the session key is shipped to a semi-trusted operator:
+
+    ```ts
+    import { safeDefaultPolicies } from "bastion";
+    await session.attachMany(safeDefaultPolicies());
+    ```
+
+- **`wrapSolAllowanceIxs` / `unwrapSolIxs`** — native SOL has no allowance primitive, so to keep SOL as an _allowance_ (the delegate never custodies lamports) rather than a vault, wrap it: fund the owner's wSOL ATA and approve the delegate. Pair with a `SpendCap` on `asset("SplToken", [NATIVE_MINT])`.
+
+    ```ts
+    import {
+        wrapSolAllowanceIxs,
+        unwrapSolIxs,
+        NATIVE_MINT,
+        sol,
+    } from "bastion";
+
+    // HOLDER: owner-signed setup
+    const { ata, instructions } = await wrapSolAllowanceIxs({
+        owner,
+        delegate, // the session's delegate PDA
+        amount: sol(5),
+        // payer,  // optional fee payer for ATA creation — defaults to `owner`
+    });
+    // send `instructions` (createATA → fund → syncNative → approve)
+
+    // later: reclaim — revoke + close back to the owner
+    const { instructions: unwrap } = await unwrapSolIxs({
+        owner,
+        // destination,  // optional — where reclaimed lamports land, defaults to `owner`
+    });
+    ```
+
+    Optional args: `wrapSolAllowanceIxs` takes a `payer` (fee payer for the ATA-creation ix, defaults to `owner`); `unwrapSolIxs` takes a `destination` (where the closed account's lamports land, defaults to `owner`). Pass them when they differ from the owner — e.g. `wrapSolAllowanceIxs({ owner, delegate, amount, payer: relayer })`.
+
+    Lower-level token-instruction builders are exported too: `buildSyncNativeIx`, `buildCloseAccountIx`, `buildApproveIx`, `buildRevokeIx`, `buildCreateAtaIdempotentIx`, `associatedTokenAddress`, plus `NATIVE_MINT`. The `*Ix` builders all accept an optional `tokenProgram` (defaults to `TOKEN_PROGRAM_ADDRESS`; pass `TOKEN_2022_PROGRAM_ADDRESS` for Token-2022).
+
 ## The execute pipeline
 
 The hot path. Everything else is owner-side bookkeeping; `execute` is what the agent calls in production.

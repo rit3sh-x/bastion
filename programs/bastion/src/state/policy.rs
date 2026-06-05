@@ -35,6 +35,7 @@ pub enum PolicyKind {
     PerProgramSpendCap = 21,
     MaxComputeUnits = 22,
     MaxPriorityFee = 23,
+    TokenAuthorityGuard = 24,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -143,6 +144,7 @@ pub enum PolicyData {
     MaxPriorityFee {
         max_micro_lamports: u64,
     },
+    TokenAuthorityGuard,
 }
 
 impl PolicyData {
@@ -223,6 +225,12 @@ impl PolicyData {
                     &wrapped_ix.data,
                 )
             }
+            PolicyData::TokenAuthorityGuard => {
+                crate::policies::token_authority_guard::check_token_authority_guard(
+                    &wrapped_ix.program_id,
+                    &wrapped_ix.data,
+                )
+            }
             PolicyData::MaxComputeUnits { max } => {
                 crate::policies::max_compute_units::check_max_compute_units(*max, sysvar_ai)
             }
@@ -266,6 +274,7 @@ impl PolicyData {
                 | PolicyData::RequireMemo { .. }
                 | PolicyData::MaxComputeUnits { .. }
                 | PolicyData::MaxPriorityFee { .. }
+                | PolicyData::TokenAuthorityGuard
         )
     }
 
@@ -295,6 +304,7 @@ impl PolicyData {
             PolicyData::PerProgramSpendCap { .. } => PolicyKind::PerProgramSpendCap,
             PolicyData::MaxComputeUnits { .. } => PolicyKind::MaxComputeUnits,
             PolicyData::MaxPriorityFee { .. } => PolicyKind::MaxPriorityFee,
+            PolicyData::TokenAuthorityGuard => PolicyKind::TokenAuthorityGuard,
         }
     }
 

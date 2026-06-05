@@ -18,6 +18,7 @@ pub mod rate_limit;
 pub mod require_memo;
 pub mod spend_cap;
 pub mod time_of_day;
+pub mod token_authority_guard;
 
 pub use amount_per_call::*;
 pub use cooldown::*;
@@ -39,3 +40,4 @@ pub use rate_limit::*;
 pub use require_memo::*;
 pub use spend_cap::*;
 pub use time_of_day::*;
+pub use token_authority_guard::*;

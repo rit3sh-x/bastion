@@ -28,6 +28,14 @@ pub const SPL_TOKEN_ACCOUNT_LEN: usize = spl_token_interface::state::Account::LE
 /// account layout). Token-2022 callers should slice `[..SPL_TOKEN_ACCOUNT_LEN]`
 /// before invoking — the first 165 bytes of a Token-2022 Account are bit-for-bit
 /// compatible with the spl-token layout regardless of extensions present.
+/// Fixed-offset field reads instead of a full `Account::unpack_from_slice`. The
+/// base SPL token Account layout is stable for both spl-token and Token-2022:
+/// `mint` @ [0..32], `owner` @ [32..64], `amount` (u64 LE) @ [64..72]. A delta
+/// only needs those three fields, so we skip the COption/state parsing `unpack`
+/// does. This runs O(accounts × policies × 2) per execute, and
+/// the differential test against the old `unpack` path below. Equivalence holds
+/// for token-program-owned (hence well-formed) accounts, which is all we ever
+/// reach (caller gates on `ai.owner == token_program`).
 fn parse_token_amount_controlled_by(
     data: &[u8],
     mint: &Pubkey,
@@ -36,12 +44,20 @@ fn parse_token_amount_controlled_by(
     if data.len() != SPL_TOKEN_ACCOUNT_LEN {
         return None;
     }
-    let acct = spl_token_interface::state::Account::unpack_from_slice(data).ok()?;
-    if acct.mint == *mint && controllers.contains(&acct.owner) {
-        Some(acct.amount)
-    } else {
-        None
+
+    let acct_mint = Pubkey::try_from(data.get(0..32)?).ok()?;
+    if acct_mint != *mint {
+        return None;
     }
+
+    let acct_owner = Pubkey::try_from(data.get(32..64)?).ok()?;
+    if !controllers.contains(&acct_owner) {
+        return None;
+    }
+
+    let amount = u64::from_le_bytes(data.get(64..72)?.try_into().ok()?);
+
+    Some(amount)
 }
 
 /// Sum `amount` across token accounts in `accounts` whose owner-program matches
@@ -291,6 +307,49 @@ mod tests {
             parse_token_amount_controlled_by(&data, &mint, &[delegate]),
             Some(u64::MAX)
         );
+    }
+
+    /// Reference: the full `Account::unpack_from_slice`.
+    fn parse_via_unpack(data: &[u8], mint: &Pubkey, controllers: &[Pubkey]) -> Option<u64> {
+        if data.len() != SPL_TOKEN_ACCOUNT_LEN {
+            return None;
+        }
+        let acct = SplAccount::unpack_from_slice(data).ok()?;
+        if acct.mint == *mint && controllers.contains(&acct.owner) {
+            Some(acct.amount)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn t15_offset_read_equiv_unpack_across_cases() {
+        let mint = pk(1);
+        let other_mint = pk(8);
+        let delegate = pk(2);
+        let owner = pk(7);
+        let stranger = pk(9);
+        let ctrls = [delegate, owner];
+
+        let cases: [(Vec<u8>, &[Pubkey]); 8] = [
+            (pack_account(mint, delegate, 1_000).to_vec(), &ctrls), // vault match
+            (pack_account(mint, owner, 500).to_vec(), &ctrls),      // allowance match
+            (pack_account(mint, stranger, 999).to_vec(), &ctrls),   // owner miss
+            (pack_account(other_mint, delegate, 7).to_vec(), &ctrls), // mint miss
+            (pack_account(mint, delegate, 0).to_vec(), &ctrls),     // zero
+            (pack_account(mint, delegate, u64::MAX).to_vec(), &ctrls), // max
+            (pack_account(mint, delegate, 42).to_vec(), &[delegate]), // single ctrl
+            (vec![0u8; 100], &ctrls),                               // wrong length
+        ];
+
+        for (data, controllers) in &cases {
+            assert_eq!(
+                parse_token_amount_controlled_by(data, &mint, controllers),
+                parse_via_unpack(data, &mint, controllers),
+                "offset reader diverged from unpack for case data.len()={}",
+                data.len()
+            );
+        }
     }
 
     #[test]

@@ -133,7 +133,7 @@ This is the only way to enforce "you can spend at most X SOL per 24h" without tr
 
 ## Policy kinds
 
-24 variants, grouped by what they constrain:
+25 variants, grouped by what they constrain:
 
 ```mermaid
 flowchart LR
@@ -170,33 +170,35 @@ flowchart LR
     Shape --> S1[MaxIxSize]
     Shape --> S2[ForeignSignerNotAllowed]
     Shape --> S3[NoAccountClose]
+    Shape --> S4[TokenAuthorityGuard]
 
     Side --> SC1[RequireMemo]
 ```
 
-| Variant                                | Asset / scope                           | State                             | Notes                                                    |
-| -------------------------------------- | --------------------------------------- | --------------------------------- | -------------------------------------------------------- |
-| `ProgramAllowlist` / `Blocklist`       | program_id of wrapped ix                | stateless                         | sorted at attach; binary-search at validate              |
-| `MintAllowlist` / `Blocklist`          | SPL/T22 token-account mint scan         | stateless                         | scans `ix_accounts` for token accounts                   |
-| `NftCollectionAllowlist` / `Blocklist` | Metaplex `collection.key`               | stateless                         | reads metadata account                                   |
-| `NftCreatorAllowlist`                  | Metaplex `creators` (verified only)     | stateless                         | rejects empty creator list at attach                     |
-| `IxDiscriminatorAllowlist`             | first 8 data bytes, scoped to a program | stateless                         | sorted at attach                                         |
-| `SpendCap`                             | NativeSol / SplToken / Token2022        | `SpendState` (Fixed or Rolling)   | pre/post delta; enforces rent-exempt floor for NativeSol |
-| `AmountPerCall`                        | NativeSol / SPL                         | stateless                         | per-execute outflow cap                                  |
-| `PerCounterpartyCap`                   | receiver pubkey + asset                 | `sent: u64`                       | charges _inflow at receiver_, not delegate outflow       |
-| `PerProgramSpendCap`                   | wrapped ix's program + asset            | `SpendState` (Fixed or Rolling)   | out-of-scope txs are a full no-op                        |
-| `MinDelegateBalance`                   | delegate.lamports()                     | stateless                         | post-CPI floor, composes with rent-exempt min            |
-| `MaxComputeUnits`                      | outer-tx ComputeBudget ix               | stateless                         | requires explicit `SetComputeUnitLimit` ≤ max            |
-| `MaxPriorityFee`                       | outer-tx ComputeBudget ix               | stateless                         | `SetComputeUnitPrice` ≤ max (no ix → 0 → passes)         |
-| `RateLimit`                            | call count, scope-filtered              | `CounterState` (Fixed or Rolling) | charge happens pre-CPI                                   |
-| `CooldownPeriod`                       | last call ts, scope-filtered            | `last_call_ts: i64`               | scope = optional program filter                          |
-| `MaxCallsTotal`                        | lifetime call counter                   | `used: u64`                       | `used` preserved across `update_policy`                  |
-| `TimeOfDayWindow`                      | UTC `start..end` minutes + days_mask    | stateless                         | days mask: bit `i` = day `i`                             |
-| `Expiry`                               | wall-clock `not_after`                  | stateless                         | per-policy expiry, not session expiry                    |
-| `MaxIxSize`                            | accounts.len() + data.len()             | stateless                         | rejects zero caps at attach                              |
-| `ForeignSignerNotAllowed`              | inner ix's signer flags                 | stateless                         | only the delegate may be a signer in the CPI             |
-| `NoAccountClose`                       | SPL Token CloseAccount discriminator    | stateless                         | hard-codes SPL Token id check                            |
-| `RequireMemo`                          | outer tx must contain a memo ix         | stateless                         | reads instructions sysvar                                |
+| Variant                                | Asset / scope                                    | State                             | Notes                                                              |
+| -------------------------------------- | ------------------------------------------------ | --------------------------------- | ------------------------------------------------------------------ |
+| `ProgramAllowlist` / `Blocklist`       | program_id of wrapped ix                         | stateless                         | sorted at attach; binary-search at validate                        |
+| `MintAllowlist` / `Blocklist`          | SPL/T22 token-account mint scan                  | stateless                         | scans `ix_accounts` for token accounts                             |
+| `NftCollectionAllowlist` / `Blocklist` | Metaplex `collection.key`                        | stateless                         | reads metadata account                                             |
+| `NftCreatorAllowlist`                  | Metaplex `creators` (verified only)              | stateless                         | rejects empty creator list at attach                               |
+| `IxDiscriminatorAllowlist`             | first 8 data bytes, scoped to a program          | stateless                         | sorted at attach                                                   |
+| `SpendCap`                             | NativeSol / SplToken / Token2022                 | `SpendState` (Fixed or Rolling)   | pre/post delta; enforces rent-exempt floor for NativeSol           |
+| `AmountPerCall`                        | NativeSol / SPL                                  | stateless                         | per-execute outflow cap                                            |
+| `PerCounterpartyCap`                   | receiver pubkey + asset                          | `sent: u64`                       | charges _inflow at receiver_, not delegate outflow                 |
+| `PerProgramSpendCap`                   | wrapped ix's program + asset                     | `SpendState` (Fixed or Rolling)   | out-of-scope txs are a full no-op                                  |
+| `MinDelegateBalance`                   | delegate.lamports()                              | stateless                         | post-CPI floor, composes with rent-exempt min                      |
+| `MaxComputeUnits`                      | outer-tx ComputeBudget ix                        | stateless                         | requires explicit `SetComputeUnitLimit` ≤ max                      |
+| `MaxPriorityFee`                       | outer-tx ComputeBudget ix                        | stateless                         | `SetComputeUnitPrice` ≤ max (no ix → 0 → passes)                   |
+| `RateLimit`                            | call count, scope-filtered                       | `CounterState` (Fixed or Rolling) | charge happens pre-CPI                                             |
+| `CooldownPeriod`                       | last call ts, scope-filtered                     | `last_call_ts: i64`               | scope = optional program filter                                    |
+| `MaxCallsTotal`                        | lifetime call counter                            | `used: u64`                       | `used` preserved across `update_policy`                            |
+| `TimeOfDayWindow`                      | UTC `start..end` minutes + days_mask             | stateless                         | days mask: bit `i` = day `i`                                       |
+| `Expiry`                               | wall-clock `not_after`                           | stateless                         | per-policy expiry, not session expiry                              |
+| `MaxIxSize`                            | accounts.len() + data.len()                      | stateless                         | rejects zero caps at attach                                        |
+| `ForeignSignerNotAllowed`              | inner ix's signer flags                          | stateless                         | only the delegate may be a signer in the CPI                       |
+| `NoAccountClose`                       | SPL Token CloseAccount discriminator             | stateless                         | hard-codes SPL Token id check                                      |
+| `TokenAuthorityGuard`                  | SPL/T22 Approve/ApproveChecked/SetAuthority tags | stateless                         | blocks authority grants balance-delta can't see; allows Revoke (5) |
+| `RequireMemo`                          | outer tx must contain a memo ix                  | stateless                         | reads instructions sysvar                                          |
 
 `Asset` variants: `NativeSol`, `SplToken(mint)`, `Token2022(mint)`, `NftCountInCollection(_)` _(reserved)_, `AnyNftCount` _(reserved)_. The NFT-count asset variants are rejected at attach time on caps that haven't implemented NFT counting yet.
 
@@ -206,19 +208,19 @@ flowchart LR
 
 ## Errors
 
-53 error variants. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
+55 error variants. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
 
-| Category                    | Variants                                                                                                                                                                                                        |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Session lifecycle**       | `SessionRevoked`, `SessionExpired`, `SessionNotRevoked`, `NewExpiryNotGreater`, `SessionInvalidSigner`, `SessionKeyIsOwner`                                                                                     |
-| **Policy bookkeeping**      | `ForeignPolicy`, `PolicyDisabled`, `PolicyHashMismatch`, `PolicyCountMismatch`, `PolicyTooMany`, `PolicyKindMismatch`, `InvalidPolicyData`, `InitialPolicyCountMismatch`                                        |
-| **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed`                                  |
-| **Caps & floors**           | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded`                                      |
-| **Rate / time**             | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation`                                                                                                                                  |
-| **Ix shape / batch**        | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`, `SelfCpiNotAllowed`, `EmptyBatch`, `NonceMismatch` |
-| **Manifest (advanced)**     | `ManifestNotPinned`, `ManifestHashMismatch`, `ManifestSignatureInvalid`, `ManifestPolicyNotStateless`                                                                                                           |
-| **Token / NFT parsing**     | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount`                                                                                                                                             |
-| **Infra**                   | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong`                                                                                                                                               |
+| Category                    | Variants                                                                                                                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Session lifecycle**       | `SessionRevoked`, `SessionExpired`, `SessionNotRevoked`, `NewExpiryNotGreater`, `SessionInvalidSigner`, `SessionKeyIsOwner`                                                                                                                       |
+| **Policy bookkeeping**      | `ForeignPolicy`, `PolicyDisabled`, `PolicyHashMismatch`, `PolicyCountMismatch`, `PolicyTooMany`, `PolicyKindMismatch`, `InvalidPolicyData`, `InitialPolicyCountMismatch`                                                                          |
+| **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed`                                                                    |
+| **Caps & floors**           | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded`                                                                        |
+| **Rate / time**             | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation`                                                                                                                                                                    |
+| **Ix shape / batch**        | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `TokenAuthorityChangeNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`, `SelfCpiNotAllowed`, `EmptyBatch`, `NonceMismatch` |
+| **Manifest (advanced)**     | `ManifestNotPinned`, `ManifestHashMismatch`, `ManifestSignatureInvalid`, `ManifestPolicyNotStateless`                                                                                                                                             |
+| **Token / NFT parsing**     | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount`                                                                                                                                                                               |
+| **Infra**                   | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong`                                                                                                                                                                                 |
 
 ---
 
@@ -242,7 +244,7 @@ flowchart LR
 
     Sess["session_*<br/>(5 files)"]
     PolCrud["policy_attach<br/>policy_detach<br/>policy_update"]
-    Pol["policy_&lt;kind&gt;<br/>(19 files, 1:1 with src/policies/)"]
+    Pol["policy_&lt;kind&gt;<br/>(20 files, 1:1 with src/policies/)"]
     Exec["execute_*<br/>(3 files)"]
     E2E["e2e_demo.rs"]
     Sec["security_hardening.rs"]
