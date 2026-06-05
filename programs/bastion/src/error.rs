@@ -163,4 +163,7 @@ pub enum BastionError {
 
     #[msg("manifest may only contain stateless policies")]
     ManifestPolicyNotStateless,
+
+    #[msg("Token authority-change instruction (approve/approveChecked/setAuthority) not allowed by policy")]
+    TokenAuthorityChangeNotAllowed,
 }

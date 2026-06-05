@@ -243,13 +243,13 @@ Every leg runs the full pipeline against the **shared** policy set and **shared*
 
 ## 7. Policies
 
-24 policy kinds. They split cleanly by **what they need to evaluate**, which also determines where they can live (see [§9](#9-scaling-axes)):
+25 policy kinds. They split cleanly by **what they need to evaluate**, which also determines where they can live (see [§9](#9-scaling-axes)):
 
 ```mermaid
 flowchart LR
     subgraph Stateless["validate()-only — no state, no balance delta"]
         direction TB
-        SL["ProgramAllow/Block, MintAllow/Block,<br/>NftCollectionAllow/Block, NftCreatorAllowlist,<br/>IxDiscriminatorAllowlist, Expiry, TimeOfDayWindow,<br/>MaxIxSize, ForeignSignerNotAllowed, NoAccountClose,<br/>RequireMemo, MaxComputeUnits, MaxPriorityFee"]
+        SL["ProgramAllow/Block, MintAllow/Block,<br/>NftCollectionAllow/Block, NftCreatorAllowlist,<br/>IxDiscriminatorAllowlist, Expiry, TimeOfDayWindow,<br/>MaxIxSize, ForeignSignerNotAllowed, NoAccountClose,<br/>TokenAuthorityGuard, RequireMemo,<br/>MaxComputeUnits, MaxPriorityFee"]
     end
     subgraph Stateful["needs persisted state or pre/post balance"]
         direction TB
@@ -258,6 +258,8 @@ flowchart LR
 ```
 
 **Full-set enforcement:** every `execute` must present the entire policy set the session committed to (`policy_count` + `policies_hash`), so the operator can never silently drop a policy.
+
+**Authority-grant gap (why `TokenAuthorityGuard` exists):** spend caps measure a token account's `amount` before and after the CPI. SPL / Token-2022 `Approve` (4), `ApproveChecked` (13) and `SetAuthority` (6) change _authority_ without changing `amount` — a cap never fires, yet a third party gains future drain rights and the funds leave on a later, un-gated transaction. `TokenAuthorityGuard` rejects those three tags; `NoAccountClose` covers `CloseAccount` (9); `Revoke` (5) is intentionally allowed. When the session key is shipped to a semi-trusted operator, attach both — the SDK ships them as a deny-by-default bundle via `safeDefaultPolicies()`.
 
 **Window kinds:** `Fixed { secs }` resets at the boundary; `Rolling { secs, slots }` is a sliding ring of up to 8 slots.
 

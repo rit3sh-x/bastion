@@ -197,6 +197,37 @@ fn manifest_not_pinned_rejected() {
 }
 
 #[test]
+fn manifest_allows_token_authority_guard() {
+    // TokenAuthorityGuard is stateless → valid in a holder-signed
+    // manifest. The leg is a non-token SOL transfer so the guard is a no-op;
+    // execute succeeds (no ManifestPolicyNotStateless).
+    let (mut svm, owner) = setup_svm();
+    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+
+    let manifest = vec![PolicyData::TokenAuthorityGuard];
+    let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
+
+    send_tx(
+        &mut svm,
+        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
+        &[&owner],
+    )
+    .expect("pin manifest");
+
+    svm.expire_blockhash();
+    let extras = zero_policy_extras(&delegate, &dest);
+    send_tx(
+        &mut svm,
+        &[
+            ed25519_ix(&owner, &hash),
+            execute_manifest_ix(&session_kp.pubkey(), &session_pda, manifest, &extras),
+        ],
+        &[&session_kp],
+    )
+    .expect("manifest with stateless TokenAuthorityGuard executes");
+}
+
+#[test]
 fn manifest_stateful_policy_rejected() {
     use bastion::state::counter::SpendState;
     use bastion::state::policy::{Asset, WindowKind};

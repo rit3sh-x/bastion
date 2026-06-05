@@ -41,17 +41,35 @@ struct ExecutionContext<'info> {
     pub expected_delegate: Pubkey,
 }
 
-struct PolicySnapshot {
-    idx: usize,
-    pre: u64,
+/// One deduplicated balance snapshot, shared by every policy that measures the
+/// same (asset, scope). computed once pre-CPI and once post-CPI
+/// no matter how many policies reference it.
+struct SnapSlot {
     asset: Asset,
+    scope: SnapScope,
+    pre: u64,
+}
+
+/// Which accounts a snapshot sums. `SelfControlled` = delegate vault + owner
+/// allowance source (`[delegate, owner]`); `Receiver` = a single counterparty.
+#[derive(Clone, PartialEq, Eq)]
+enum SnapScope {
+    SelfControlled,
+    Receiver(Pubkey),
+}
+
+/// A spend policy's post-CPI charge, bound by `slot_idx` to the snapshot whose
+/// pre/post delta drives it. Many charges may share one slot.
+struct Charge {
+    policy_idx: usize,
+    slot_idx: usize,
     action: PostAction,
 }
 
 enum PostAction {
     SpendCap,
     AmountPerCall,
-    PerCounterpartyCap { receiver: Pubkey },
+    PerCounterpartyCap,
     PerProgramSpendCap,
 }
 
@@ -108,7 +126,7 @@ impl<'info> Execute<'info> {
                 BastionError::SelfCpiNotAllowed
             );
 
-            self.validate_policies(&clock, wrapped_ix, &exec)?;
+            self.validate_policies(&clock, wrapped_ix, &exec, &sysvar_ai)?;
 
             // Manifest (stateless) policies validate against each leg too.
             if let Some(m) = &manifest {
@@ -119,13 +137,13 @@ impl<'info> Execute<'info> {
 
             self.pre_cpi_state_updates(&clock, wrapped_ix, &mut exec)?;
 
-            let snapshots = self.pre_cpi_snapshots(wrapped_ix, &exec)?;
+            let (slots, charges) = self.pre_cpi_snapshots(wrapped_ix, &exec)?;
 
             let (metas, infos) = self.build_cpi_accounts(wrapped_ix, &exec)?;
 
             self.invoke_wrapped_ix(wrapped_ix, metas, infos)?;
 
-            self.post_cpi_enforcement(&clock, &mut exec, &snapshots)?;
+            self.post_cpi_enforcement(&clock, &mut exec, &slots, &charges)?;
         }
 
         // One monotonic increment per execute (per tx, not per leg).
@@ -259,15 +277,33 @@ impl<'info> Execute<'info> {
         clock: &Clock,
         wrapped_ix: &WrappedInstruction,
         exec: &ExecutionContext<'info>,
+        sysvar_ai: &AccountInfo<'info>,
     ) -> Result<()> {
-        let sysvar_ai = self.instructions_sysvar.to_account_info();
-
         for p in &exec.policies {
             p.data
-                .validate(clock, wrapped_ix, exec.ix_accounts, &sysvar_ai)?;
+                .validate(clock, wrapped_ix, exec.ix_accounts, sysvar_ai)?;
         }
 
         Ok(())
+    }
+
+    /// Compute the balance a `(scope, asset)` snapshot measures. Used identically
+    /// pre- and post-CPI so the delta is apples-to-apples.
+    fn snap(
+        &self,
+        scope: &SnapScope,
+        asset: &Asset,
+        exec: &ExecutionContext<'info>,
+    ) -> Result<u64> {
+        match scope {
+            SnapScope::SelfControlled => snapshot_for_asset(
+                asset,
+                exec.ix_accounts,
+                exec.delegate_ai,
+                &self.session.owner,
+            ),
+            SnapScope::Receiver(r) => snapshot_for_asset_at_receiver(asset, exec.ix_accounts, r),
+        }
     }
 
     fn pre_cpi_state_updates(
@@ -343,80 +379,66 @@ impl<'info> Execute<'info> {
         &self,
         wrapped_ix: &WrappedInstruction,
         exec: &ExecutionContext<'info>,
-    ) -> Result<Vec<PolicySnapshot>> {
-        let mut snaps = Vec::new();
+    ) -> Result<(Vec<SnapSlot>, Vec<Charge>)> {
+        let mut slots: Vec<SnapSlot> = Vec::with_capacity(exec.policies.len());
+        let mut charges: Vec<Charge> = Vec::with_capacity(exec.policies.len());
 
         for (i, p) in exec.policies.iter().enumerate() {
-            match &p.data {
+            let (asset, scope, action) = match &p.data {
                 PolicyData::SpendCap { asset, .. } => {
-                    let pre = snapshot_for_asset(
-                        asset,
-                        exec.ix_accounts,
-                        exec.delegate_ai,
-                        &self.session.owner,
-                    )?;
-                    snaps.push(PolicySnapshot {
-                        idx: i,
-                        pre,
-                        asset: asset.clone(),
-                        action: PostAction::SpendCap,
-                    });
+                    (asset, SnapScope::SelfControlled, PostAction::SpendCap)
                 }
-
                 PolicyData::AmountPerCall { asset, .. } => {
-                    let pre = snapshot_for_asset(
-                        asset,
-                        exec.ix_accounts,
-                        exec.delegate_ai,
-                        &self.session.owner,
-                    )?;
-                    snaps.push(PolicySnapshot {
-                        idx: i,
-                        pre,
-                        asset: asset.clone(),
-                        action: PostAction::AmountPerCall,
-                    });
+                    (asset, SnapScope::SelfControlled, PostAction::AmountPerCall)
                 }
-
                 PolicyData::PerCounterpartyCap {
                     receiver, asset, ..
-                } => {
-                    let pre = snapshot_for_asset_at_receiver(asset, exec.ix_accounts, receiver)?;
-                    snaps.push(PolicySnapshot {
-                        idx: i,
-                        pre,
-                        asset: asset.clone(),
-                        action: PostAction::PerCounterpartyCap {
-                            receiver: *receiver,
-                        },
-                    });
-                }
-
+                } => (
+                    asset,
+                    SnapScope::Receiver(*receiver),
+                    PostAction::PerCounterpartyCap,
+                ),
                 PolicyData::PerProgramSpendCap { program, asset, .. } => {
                     // Scope filter: out-of-scope txs are a complete no-op
                     // (no snapshot, no charge, no state mutation).
                     if program != &wrapped_ix.program_id {
                         continue;
                     }
-                    let pre = snapshot_for_asset(
+                    (
                         asset,
-                        exec.ix_accounts,
-                        exec.delegate_ai,
-                        &self.session.owner,
-                    )?;
-                    snaps.push(PolicySnapshot {
-                        idx: i,
-                        pre,
-                        asset: asset.clone(),
-                        action: PostAction::PerProgramSpendCap,
-                    });
+                        SnapScope::SelfControlled,
+                        PostAction::PerProgramSpendCap,
+                    )
                 }
+                _ => continue,
+            };
 
-                _ => {}
-            }
+            // Dedup: K policies on the same (asset, scope) share ONE
+            // snapshot — scan + decode the accounts once, not once per policy.
+            let slot_idx = match slots
+                .iter()
+                .position(|s| s.scope == scope && &s.asset == asset)
+            {
+                Some(idx) => idx,
+                None => {
+                    let pre = self.snap(&scope, asset, exec)?;
+                    slots.push(SnapSlot {
+                        asset: asset.clone(),
+                        scope: scope.clone(),
+                        pre,
+                    });
+                    slots.len().saturating_sub(1)
+                }
+            };
+
+            charges.push(Charge {
+                policy_idx: i,
+                slot_idx,
+                action,
+            });
         }
 
-        Ok(snaps)
+        Ok((slots, charges))
     }
 
     fn build_cpi_accounts(
@@ -494,35 +516,40 @@ impl<'info> Execute<'info> {
         &self,
         clock: &Clock,
         exec: &mut ExecutionContext<'info>,
-        snapshots: &[PolicySnapshot],
+        slots: &[SnapSlot],
+        charges: &[Charge],
     ) -> Result<()> {
-        for snap in snapshots {
-            let post = match &snap.action {
-                PostAction::PerCounterpartyCap { receiver } => {
-                    snapshot_for_asset_at_receiver(&snap.asset, exec.ix_accounts, receiver)?
-                }
-                _ => snapshot_for_asset(
-                    &snap.asset,
-                    exec.ix_accounts,
-                    exec.delegate_ai,
-                    &self.session.owner,
-                )?,
-            };
+        // Recompute each distinct snapshot's post-CPI balance ONCE, then
+        // fan the pre/post pair out to every charge that shares the slot.
+        // Full re-scan per slot — accounts may have been initialized mid-CPI.
+        let mut post_vals: Vec<u64> = Vec::with_capacity(slots.len());
+        for s in slots {
+            post_vals.push(self.snap(&s.scope, &s.asset, exec)?);
+        }
+
+        for charge in charges {
+            let slot = slots
+                .get(charge.slot_idx)
+                .ok_or(BastionError::InvalidPolicyData)?;
+            let pre = slot.pre;
+            let post = *post_vals
+                .get(charge.slot_idx)
+                .ok_or(BastionError::InvalidPolicyData)?;
 
             let policy_info = exec
                 .policy_infos
-                .get(snap.idx)
+                .get(charge.policy_idx)
                 .copied()
                 .ok_or(BastionError::InvalidPolicyData)?;
 
             let p = exec
                 .policies
-                .get_mut(snap.idx)
+                .get_mut(charge.policy_idx)
                 .ok_or(BastionError::InvalidPolicyData)?;
 
             let mut dirty = false;
 
-            match (&mut p.data, &snap.action) {
+            match (&mut p.data, &charge.action) {
                 (
                     PolicyData::SpendCap {
                         state,
@@ -539,7 +566,7 @@ impl<'info> Execute<'info> {
                         state,
                         window,
                         max: *max,
-                        pre: snap.pre,
+                        pre,
                         post,
                         asset: &asset_local,
                         delegate: exec.delegate_ai,
@@ -549,14 +576,14 @@ impl<'info> Execute<'info> {
                 }
 
                 (PolicyData::AmountPerCall { max, .. }, PostAction::AmountPerCall) => {
-                    check_amount_per_call(*max, snap.pre, post)?;
+                    check_amount_per_call(*max, pre, post)?;
                 }
 
                 (
                     PolicyData::PerCounterpartyCap { sent, max, .. },
-                    PostAction::PerCounterpartyCap { .. },
+                    PostAction::PerCounterpartyCap,
                 ) => {
-                    charge_counterparty_cap(sent, *max, snap.pre, post)?;
+                    charge_counterparty_cap(sent, *max, pre, post)?;
                     dirty = true;
                 }
 
@@ -570,7 +597,7 @@ impl<'info> Execute<'info> {
                         state,
                         window,
                         *max,
-                        snap.pre,
+                        pre,
                         post,
                         clock.unix_timestamp,
                     )?;

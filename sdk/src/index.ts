@@ -31,11 +31,16 @@ export {
     TOKEN_PROGRAM_ADDRESS,
     TOKEN_2022_PROGRAM_ADDRESS,
     ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
+    NATIVE_MINT,
     buildApproveIx,
     buildRevokeIx,
     buildTokenTransferIx,
     associatedTokenAddress,
     buildCreateAtaIdempotentIx,
+    buildSyncNativeIx,
+    buildCloseAccountIx,
+    wrapSolAllowanceIxs,
+    unwrapSolIxs,
 } from "./token";
 export type {
     ApproveArgs,
@@ -43,6 +48,12 @@ export type {
     TokenTransferArgs,
     AtaArgs,
     CreateAtaArgs,
+    SyncNativeArgs,
+    CloseAccountArgs,
+    WrapSolAllowanceArgs,
+    WrapSolAllowanceResult,
+    UnwrapSolArgs,
+    UnwrapSolResult,
 } from "./token";
 
 export type {
@@ -56,6 +67,8 @@ export {
     generateExtractableSessionKey,
     sessionKeyFromSecret,
 } from "./wallet";
+
+export { safeDefaultPolicies } from "./policies";
 
 export { createHolderClient } from "./holder";
 export type {

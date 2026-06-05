@@ -133,7 +133,7 @@ This is the only way to enforce "you can spend at most X SOL per 24h" without tr
 
 ## Policy kinds
 
-24 variants, grouped by what they constrain:
+25 variants, grouped by what they constrain:
 
 ```mermaid
 flowchart LR
@@ -170,6 +170,7 @@ flowchart LR
     Shape --> S1[MaxIxSize]
     Shape --> S2[ForeignSignerNotAllowed]
     Shape --> S3[NoAccountClose]
+    Shape --> S4[TokenAuthorityGuard]
 
     Side --> SC1[RequireMemo]
 ```
@@ -196,6 +197,7 @@ flowchart LR
 | `MaxIxSize`                            | accounts.len() + data.len()             | stateless                         | rejects zero caps at attach                              |
 | `ForeignSignerNotAllowed`              | inner ix's signer flags                 | stateless                         | only the delegate may be a signer in the CPI             |
 | `NoAccountClose`                       | SPL Token CloseAccount discriminator    | stateless                         | hard-codes SPL Token id check                            |
+| `TokenAuthorityGuard`                  | SPL/T22 Approve/ApproveChecked/SetAuthority tags | stateless                | blocks authority grants balance-delta can't see; allows Revoke (5) |
 | `RequireMemo`                          | outer tx must contain a memo ix         | stateless                         | reads instructions sysvar                                |
 
 `Asset` variants: `NativeSol`, `SplToken(mint)`, `Token2022(mint)`, `NftCountInCollection(_)` _(reserved)_, `AnyNftCount` _(reserved)_. The NFT-count asset variants are rejected at attach time on caps that haven't implemented NFT counting yet.
@@ -206,7 +208,7 @@ flowchart LR
 
 ## Errors
 
-53 error variants. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
+55 error variants. Source of truth: [`src/error.rs`](src/error.rs). Grouped by category:
 
 | Category                    | Variants                                                                                                                                                                                                        |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -215,7 +217,7 @@ flowchart LR
 | **Allowlists / blocklists** | `ProgramNotAllowed`, `ProgramBlocked`, `MintNotAllowed`, `MintBlocked`, `NftCollectionNotAllowed`, `NftCollectionBlocked`, `NftCreatorNotAllowed`, `IxDiscriminatorNotAllowed`                                  |
 | **Caps & floors**           | `SpendCapExceeded`, `RentExemptFloorViolation`, `DelegateBalanceTooLow`, `AmountPerCallExceeded`, `MaxCallsExceeded`, `CounterpartyCapExceeded`, `ProgramSpendCapExceeded`                                      |
 | **Rate / time**             | `RateLimitExceeded`, `CooldownActive`, `OutsideAllowedTime`, `ExpiryViolation`                                                                                                                                  |
-| **Ix shape / batch**        | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`, `SelfCpiNotAllowed`, `EmptyBatch`, `NonceMismatch` |
+| **Ix shape / batch**        | `IxTooLarge`, `ForeignSignerNotAllowed`, `AccountCloseNotAllowed`, `TokenAuthorityChangeNotAllowed`, `MissingRequiredMemo`, `InvalidCompactMeta`, `ComputeUnitsTooHigh`, `PriorityFeeTooHigh`, `SelfCpiNotAllowed`, `EmptyBatch`, `NonceMismatch` |
 | **Manifest (advanced)**     | `ManifestNotPinned`, `ManifestHashMismatch`, `ManifestSignatureInvalid`, `ManifestPolicyNotStateless`                                                                                                           |
 | **Token / NFT parsing**     | `NotAnNftMint`, `UnsupportedTokenProgram`, `InvalidMetadataAccount`                                                                                                                                             |
 | **Infra**                   | `NumericalOverflow`, `InvalidPda`, `InvalidWindow`, `ListTooLong`                                                                                                                                               |
@@ -242,7 +244,7 @@ flowchart LR
 
     Sess["session_*<br/>(5 files)"]
     PolCrud["policy_attach<br/>policy_detach<br/>policy_update"]
-    Pol["policy_&lt;kind&gt;<br/>(19 files, 1:1 with src/policies/)"]
+    Pol["policy_&lt;kind&gt;<br/>(20 files, 1:1 with src/policies/)"]
     Exec["execute_*<br/>(3 files)"]
     E2E["e2e_demo.rs"]
     Sec["security_hardening.rs"]
