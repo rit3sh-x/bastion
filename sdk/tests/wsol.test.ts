@@ -3,8 +3,11 @@ import { AccountRole, type Address } from "@solana/kit";
 import {
     ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
     NATIVE_MINT,
+    TOKEN_2022_PROGRAM_ADDRESS,
     TOKEN_PROGRAM_ADDRESS,
     associatedTokenAddress,
+    buildCloseAccountIx,
+    buildSyncNativeIx,
     unwrapSolIxs,
     wrapSolAllowanceIxs,
 } from "@/token";
@@ -113,5 +116,57 @@ describe("unwrapSolIxs", () => {
             destination: DELEGATE,
         });
         expect(instructions[1]!.accounts![1]!.address).toBe(DELEGATE);
+    });
+});
+
+describe("buildSyncNativeIx", () => {
+    const ACCT = "Vote111111111111111111111111111111111111111" as Address;
+
+    it("encodes tag 17 on the default token program", () => {
+        const ix = buildSyncNativeIx({ account: ACCT });
+        expect(ix.programAddress).toBe(TOKEN_PROGRAM_ADDRESS);
+        expect(ix.data).toEqual(new Uint8Array([17]));
+        expect(ix.accounts).toEqual([
+            { address: ACCT, role: AccountRole.WRITABLE },
+        ]);
+    });
+
+    it("honours a tokenProgram override", () => {
+        const ix = buildSyncNativeIx({
+            account: ACCT,
+            tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+        });
+        expect(ix.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS);
+    });
+});
+
+describe("buildCloseAccountIx", () => {
+    const ACCT = "Vote111111111111111111111111111111111111111" as Address;
+    const DEST = "Stake11111111111111111111111111111111111111" as Address;
+    const AUTH = "11111111111111111111111111111111" as Address;
+
+    it("encodes tag 9 with account/destination/owner-signer on the default program", () => {
+        const ix = buildCloseAccountIx({
+            account: ACCT,
+            destination: DEST,
+            owner: AUTH,
+        });
+        expect(ix.programAddress).toBe(TOKEN_PROGRAM_ADDRESS);
+        expect(ix.data).toEqual(new Uint8Array([9]));
+        expect(ix.accounts).toEqual([
+            { address: ACCT, role: AccountRole.WRITABLE },
+            { address: DEST, role: AccountRole.WRITABLE },
+            { address: AUTH, role: AccountRole.READONLY_SIGNER },
+        ]);
+    });
+
+    it("honours a tokenProgram override", () => {
+        const ix = buildCloseAccountIx({
+            account: ACCT,
+            destination: DEST,
+            owner: AUTH,
+            tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+        });
+        expect(ix.programAddress).toBe(TOKEN_2022_PROGRAM_ADDRESS);
     });
 });
