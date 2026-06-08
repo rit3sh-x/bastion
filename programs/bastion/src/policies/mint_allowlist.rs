@@ -58,6 +58,7 @@ pub fn check_mint_blocklist(mints: &[Pubkey], ix_accounts: &[AccountInfo]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::general::make_account_info;
     use crate::utils::balance_delta::{spl_token_2022_id, spl_token_id, SPL_TOKEN_ACCOUNT_LEN};
 
     fn token_account_data(mint: &Pubkey) -> Vec<u8> {
@@ -66,14 +67,6 @@ mod tests {
         data
     }
 
-    fn make_account_info<'a>(
-        key: &'a Pubkey,
-        owner: &'a Pubkey,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, false, lamports, data, owner, false)
-    }
 
     #[test]
     fn skips_non_token_account() {

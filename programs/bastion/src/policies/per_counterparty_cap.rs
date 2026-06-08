@@ -52,17 +52,10 @@ pub fn charge_counterparty_cap(sent: &mut u64, max: u64, pre: u64, post: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::general::make_account_info;
     use crate::state::policy::Asset;
     use crate::utils::balance_delta::{spl_token_id, SPL_TOKEN_ACCOUNT_LEN};
 
-    fn make_account_info<'a>(
-        key: &'a Pubkey,
-        owner: &'a Pubkey,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, false, lamports, data, owner, false)
-    }
 
     fn pack_token_account(mint: Pubkey, owner: Pubkey, amount: u64) -> [u8; SPL_TOKEN_ACCOUNT_LEN] {
         let mut buf = [0u8; SPL_TOKEN_ACCOUNT_LEN];

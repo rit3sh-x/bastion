@@ -101,18 +101,11 @@ fn charge_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::general::make_account_info;
     use crate::state::counter::SpendState;
     use crate::state::policy::{Asset, WindowKind};
     use crate::utils::general::assert_anchor_error;
 
-    fn make_account_info<'a>(
-        key: &'a Pubkey,
-        owner: &'a Pubkey,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, false, lamports, data, owner, false)
-    }
 
     #[test]
     fn nft_variants_snapshot_zero() {

@@ -18,6 +18,7 @@ pub fn check_max_compute_units(max: u32, sysvar_ai: &AccountInfo) -> Result<()> 
 mod tests {
     use super::*;
     use crate::constants::COMPUTE_BUDGET_ID;
+    use crate::utils::general::make_account_info;
     use anchor_lang::solana_program::{
         instruction::Instruction,
         sysvar::instructions::{
@@ -48,14 +49,6 @@ mod tests {
         construct_instructions_data(&borrowed)
     }
 
-    fn make_account_info<'a>(
-        key: &'a Pubkey,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-        owner: &'a Pubkey,
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(key, false, false, lamports, data, owner, false)
-    }
 
     fn set_cu_limit_ix(units: u32) -> Instruction {
         let mut data = vec![2u8];
@@ -77,7 +70,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&ixs);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_err());
     }
@@ -88,7 +81,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&[set_cu_limit_ix(100_000)]);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_ok());
     }
@@ -99,7 +92,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&[set_cu_limit_ix(50_000)]);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_ok());
     }
@@ -110,7 +103,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&[set_cu_limit_ix(200_000)]);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_err());
     }
@@ -121,7 +114,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&[set_cu_limit_ix(100_001)]);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_err());
     }
@@ -139,7 +132,7 @@ mod tests {
         let owner = Pubkey::default();
         let mut lamports = 0u64;
         let mut data = build_sysvar(&ixs);
-        let ai = make_account_info(&key, &mut lamports, &mut data, &owner);
+        let ai = make_account_info(&key, &owner, &mut lamports, &mut data);
 
         assert!(check_max_compute_units(100_000, &ai).is_ok());
     }
