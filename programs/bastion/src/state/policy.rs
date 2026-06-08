@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::MAX_PROGRAMS_PER_LIST,
+    constants::{MAX_DISCRIMINATOR_LEN, MAX_PROGRAMS_PER_LIST},
     error::BastionError,
     policies::{
         expiry::check_expiry,
@@ -143,7 +143,7 @@ pub enum PolicyData {
     },
     IxDiscriminatorAllowlist {
         program: Pubkey,
-        discriminators: Vec<[u8; 8]>,
+        discriminators: Vec<Vec<u8>>,
     },
     RequireMemo {
         memo_program: Pubkey,
@@ -347,6 +347,17 @@ impl PolicyData {
                     discriminators.len() <= MAX_PROGRAMS_PER_LIST,
                     BastionError::ListTooLong
                 );
+                // Each entry is a 1..=MAX_DISCRIMINATOR_LEN byte leading prefix of
+                // the inner ix data (the program's tag, optionally + leading arg
+                // bytes to pin values). A zero-length entry would prefix-match
+                // every instruction (allow-all bypass); over-long entries bloat
+                // the account. Reject both.
+                for d in discriminators {
+                    require!(
+                        (1..=MAX_DISCRIMINATOR_LEN).contains(&d.len()),
+                        BastionError::InvalidPolicyData
+                    );
+                }
             }
             PolicyData::MaxCallsTotal { max, used } => {
                 require!(*used == 0, BastionError::InvalidPolicyData);
@@ -714,6 +725,41 @@ mod tests {
     #[test]
     fn uninitialized_sentinel_rejected_on_attach() {
         assert!(PolicyData::Uninitialized.validate_attach_params().is_err());
+    }
+
+    #[test]
+    fn roundtrip_ix_discriminator_allowlist_variable_len() {
+        assert_roundtrip(&PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![3], vec![2, 0, 0, 0], vec![9; 8]],
+        });
+    }
+
+    #[test]
+    fn ix_discriminator_attach_accepts_mixed_lengths() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![3], vec![2, 0, 0, 0], vec![9; 8], vec![1; 12]],
+        };
+        assert!(data.validate_attach_params().is_ok());
+    }
+
+    #[test]
+    fn ix_discriminator_attach_rejects_empty_entry() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![]],
+        };
+        assert!(data.validate_attach_params().is_err());
+    }
+
+    #[test]
+    fn ix_discriminator_attach_rejects_oversize_entry() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![0u8; 33]],
+        };
+        assert!(data.validate_attach_params().is_err());
     }
 
     #[test]

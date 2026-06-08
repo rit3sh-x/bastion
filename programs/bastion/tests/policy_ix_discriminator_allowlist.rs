@@ -34,7 +34,7 @@ fn ix_disc_allowlist_passes_for_allowed_discriminator() {
     let allowed_disc = [9u8; 8];
     let data = PolicyData::IxDiscriminatorAllowlist {
         program: Pubkey::new_unique(),
-        discriminators: vec![allowed_disc],
+        discriminators: vec![allowed_disc.to_vec()],
     };
     let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
 
@@ -57,7 +57,7 @@ fn ix_disc_allowlist_rejects_non_matching_disc_in_scope() {
 
     let data = PolicyData::IxDiscriminatorAllowlist {
         program: anchor_lang::system_program::ID,
-        discriminators: vec![allowed_disc],
+        discriminators: vec![allowed_disc.to_vec()],
     };
     let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
     let wix = make_wrapped_with_disc_prefix([2u8, 0, 0, 0, 0, 0, 0, 0], 1_000);
@@ -89,4 +89,46 @@ fn attach_rejects_empty_disc_list() {
         &[],
     );
     send_ix(&mut svm, ix, &[&owner]).expect_err("empty disc list must reject");
+}
+
+#[test]
+fn ix_disc_allowlist_passes_for_4byte_system_tag() {
+    let (mut svm, owner) = setup_svm();
+    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let data = PolicyData::IxDiscriminatorAllowlist {
+        program: anchor_lang::system_program::ID,
+        discriminators: vec![vec![2, 0, 0, 0]],
+    };
+    let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
+
+    execute(
+        &mut svm,
+        &session_kp,
+        &session_pda,
+        transfer_wrapped_ix(1_000),
+        1,
+        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
+    )
+    .expect("4-byte System tag prefix → allowed");
+}
+
+#[test]
+fn ix_disc_allowlist_rejects_wrong_4byte_tag() {
+    let (mut svm, owner) = setup_svm();
+    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let data = PolicyData::IxDiscriminatorAllowlist {
+        program: anchor_lang::system_program::ID,
+        discriminators: vec![vec![7, 0, 0, 0]],
+    };
+    let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
+
+    let res = execute(
+        &mut svm,
+        &session_kp,
+        &session_pda,
+        transfer_wrapped_ix(1_000),
+        1,
+        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
+    );
+    assert_svm_anchor_error(res, BastionError::IxDiscriminatorNotAllowed);
 }

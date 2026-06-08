@@ -81,7 +81,7 @@ fn build_six_policy_session(
         &session_pda,
         PolicyData::IxDiscriminatorAllowlist {
             program: anchor_lang::system_program::ID,
-            discriminators: vec![allowed_disc],
+            discriminators: vec![allowed_disc.to_vec()],
         },
         &[p0, p1, p2, p3],
     )
