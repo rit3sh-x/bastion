@@ -4,7 +4,7 @@ use bastion::state::policy::PolicyData;
 use bastion::utils::hash::{compute_policies_hash, EMPTY_POLICIES_HASH};
 
 use crate::helpers::*;
-use bastion::BastionError;
+use bastion::error::BastionError;
 
 #[test]
 fn detach_only_policy_returns_to_empty_hash() {

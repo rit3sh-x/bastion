@@ -24,7 +24,7 @@ pub fn check_program_blocklist(programs: &[Pubkey], program_id: &Pubkey) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::pk;
+    use crate::utils::general::pk;
 
     use super::*;
 

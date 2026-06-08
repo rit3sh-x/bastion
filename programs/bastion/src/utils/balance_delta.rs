@@ -142,7 +142,7 @@ pub fn snapshot_asset(
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::pk;
+    use crate::utils::general::pk;
 
     use super::*;
     use anchor_lang::solana_program::program_option::COption;
@@ -309,7 +309,6 @@ mod tests {
         );
     }
 
-    /// Reference: the full `Account::unpack_from_slice`.
     fn parse_via_unpack(data: &[u8], mint: &Pubkey, controllers: &[Pubkey]) -> Option<u64> {
         if data.len() != SPL_TOKEN_ACCOUNT_LEN {
             return None;

@@ -1,4 +1,6 @@
-import type { PolicyDataArgs } from "./generated";
+import type { PolicyDataArgs } from "../generated";
+import { NoAccountClose } from "./no-account-close";
+import { TokenAuthorityGuard } from "./token-authority-guard";
 
 /**
  * Deny-by-default authority lockdown bundle.
@@ -22,5 +24,5 @@ import type { PolicyDataArgs } from "./generated";
  * returned each call so callers may safely spread or mutate it.
  */
 export function safeDefaultPolicies(): PolicyDataArgs[] {
-    return [{ __kind: "TokenAuthorityGuard" }, { __kind: "NoAccountClose" }];
+    return [TokenAuthorityGuard(), NoAccountClose()];
 }

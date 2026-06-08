@@ -18,7 +18,7 @@ pub fn charge_lifetime(used: &mut u64, max: u64) -> Result<()> {
 mod tests {
     use super::*;
 
-    use crate::utils::assert_anchor_error;
+    use crate::utils::general::assert_anchor_error;
 
     #[test]
     fn first_call_increments_to_one() {

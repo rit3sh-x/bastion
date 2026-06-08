@@ -15,7 +15,7 @@ pub fn check_amount_per_call(max: u64, pre: u64, post: u64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::assert_anchor_error;
+    use crate::utils::general::assert_anchor_error;
 
     use super::*;
 

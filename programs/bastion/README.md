@@ -52,7 +52,7 @@ PDA seeds:
 | **Policy**   | `["policy", session, seed_le_u64]` (seed = `Session.next_seed` at attach time) |
 | **Delegate** | `["delegate", owner, session_key]` (bump cached on Session)                    |
 
-`Session.policies_hash` is a **SHA-256** commitment over the set of child Policy keys (blake3 is inactive on mainnet-feature-set validators). `execute` rejects any caller that doesn't pass the exact set that hashes to this commitment. That defends against an old / forged / partial policy set being substituted at call time. `Session.action_nonce` is a monotonic counter (one `+1` per `execute`) used for optional multi-tx ordering via `expected_nonce`.
+`Session.policies_hash` is a **SHA-256** commitment over the set of child Policy keys. `execute` rejects any caller that doesn't pass the exact set that hashes to this commitment. That defends against an old / forged / partial policy set being substituted at call time. `Session.action_nonce` is a monotonic counter (one `+1` per `execute`) used for optional multi-tx ordering via `expected_nonce`.
 
 **Two-key model:** `init_session` enforces `session_key ≠ owner`. The owner (holder) is the only signer for every admin instruction; the session key (operator) can only call `execute`. See [ARCHITECTURE.md §3](../../ARCHITECTURE.md#3-the-two-key-trust-model).
 

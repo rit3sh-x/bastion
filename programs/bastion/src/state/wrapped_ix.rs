@@ -52,7 +52,7 @@ pub struct WrappedInstruction {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::pk;
+    use crate::utils::general::pk;
 
     use super::*;
 

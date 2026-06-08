@@ -8,7 +8,7 @@ use bastion::state::wrapped_ix::{CompactAccountMeta, WrappedInstruction};
 use solana_signer::Signer;
 
 use crate::helpers::*;
-use bastion::BastionError;
+use bastion::error::BastionError;
 
 #[test]
 fn attach_rejects_spendcap_nft_count_in_collection() {

@@ -6,7 +6,7 @@ use bastion::state::policy::PolicyData;
 use solana_signer::Signer;
 
 use crate::helpers::*;
-use bastion::BastionError;
+use bastion::error::BastionError;
 
 fn build_real_cpi_setup(
     svm: &mut litesvm::LiteSVM,

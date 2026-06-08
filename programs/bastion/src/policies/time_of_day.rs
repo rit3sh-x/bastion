@@ -50,7 +50,7 @@ pub fn check_time_of_day(ts: i64, start_minute: u16, end_minute: u16, days_mask:
 
 #[cfg(test)]
 mod tests {
-    use crate::assert_anchor_error;
+    use crate::utils::general::assert_anchor_error;
 
     use super::*;
     const MON_2024_01_01_UTC: i64 = 1_704_067_200;

@@ -14,7 +14,6 @@ export const ASSOCIATED_TOKEN_PROGRAM_ADDRESS =
     "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" as Address;
 const SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111" as Address;
 
-/** Canonical wrapped-SOL mint (classic SPL Token). */
 export const NATIVE_MINT =
     "So11111111111111111111111111111111111111112" as Address;
 
@@ -207,17 +206,6 @@ export interface WrapSolAllowanceResult {
     instructions: Instruction[];
 }
 
-/**
- * Build the holder-side instruction sequence that puts SOL under Bastion as an
- * **allowance** rather than a vault. SOL has no native allowance, so
- * we wrap it: fund the owner's wSOL ATA and approve the delegate as its SPL
- * spender. The lamports stay in an owner-owned account — the delegate never
- * custodies native SOL — and a `SpendCap` on `Asset::SplToken(NATIVE_MINT)`
- * gates spends via the standard pre/post balance delta.
- *
- * Order: create ATA (idempotent) → fund it → `SyncNative` → `Approve(delegate)`.
- * All instructions are owner-signed; pair with `unwrapSolIxs` to reclaim.
- */
 export async function wrapSolAllowanceIxs(
     args: WrapSolAllowanceArgs
 ): Promise<WrapSolAllowanceResult> {
@@ -247,7 +235,6 @@ export async function wrapSolAllowanceIxs(
 
 export interface UnwrapSolArgs {
     owner: Address;
-    /** Where reclaimed lamports land. Defaults to `owner`. */
     destination?: Address;
 }
 
@@ -256,10 +243,6 @@ export interface UnwrapSolResult {
     instructions: Instruction[];
 }
 
-/**
- * Reverse {@link wrapSolAllowanceIxs}: revoke the delegate's approval and close
- * the wSOL ATA, returning the wrapped lamports to `destination` (default owner).
- */
 export async function unwrapSolIxs(
     args: UnwrapSolArgs
 ): Promise<UnwrapSolResult> {

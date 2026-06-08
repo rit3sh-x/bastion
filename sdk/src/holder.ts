@@ -28,9 +28,7 @@ export interface HolderOpenArgs {
 }
 
 export interface HolderOpenResult {
-    /** Full admin handle (owner-signed). Stays on the holder's machine. */
     handle: SessionHandle;
-    /** Shippable, execute-only credential — owner secret ∉ it. */
     operator: OperatorCredential;
 }
 
@@ -39,11 +37,6 @@ export interface HolderClient {
     openSession(args: HolderOpenArgs): Promise<HolderOpenResult>;
     hydrate(args: HydrateSessionArgs): SessionHandle;
     listMine(): Promise<readonly Address[]>;
-    /**
-     * Ed25519-sign a stateless-policy manifest with the owner key. Pin the
-     * returned `manifestHash` via `handle.pinManifest(...)`, then ship the
-     * `{ policies, signature }` to the operator for `execute({ manifest })`.
-     */
     signManifest(policies: readonly PolicyDataArgs[]): Promise<SignedManifest>;
 }
 

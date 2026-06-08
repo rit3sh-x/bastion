@@ -5,8 +5,7 @@
         "rootDir": ".",
         "paths": {
             "@/*": ["./src/*"],
-            "@bastion/idl": ["../target/idl/bastion.json"],
-            "@bastion/types": ["../target/types/bastion.ts"]
+            "@bastion/idl": ["../target/idl/bastion.json"]
         }
     },
     "include": ["src", "scripts", "tests", "vitest.config.ts"]

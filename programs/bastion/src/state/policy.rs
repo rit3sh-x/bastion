@@ -1,6 +1,26 @@
 use anchor_lang::prelude::*;
 
-use crate::state::counter::{CounterState, SpendState};
+use crate::{
+    constants::{MAX_DISCRIMINATOR_LEN, MAX_PROGRAMS_PER_LIST},
+    error::BastionError,
+    policies::{
+        expiry::check_expiry,
+        ix_discriminator_allowlist::check_ix_discriminator_allowlist,
+        max_compute_units::check_max_compute_units,
+        max_ix_size::check_max_ix_size,
+        max_priority_fee::check_max_priority_fee,
+        mint_allowlist::{check_mint_allowlist, check_mint_blocklist},
+        nft_collection::{check_nft_collection_allowlist, check_nft_collection_blocklist},
+        nft_creator_allowlist::check_nft_creator_allowlist,
+        no_account_close::check_no_account_close,
+        program_allowlist::{check_program_allowlist, check_program_blocklist},
+        require_memo::check_require_memo,
+        time_of_day::check_time_of_day,
+        token_authority_guard::check_token_authority_guard,
+    },
+    state::counter::{CounterState, SpendState},
+    state::wrapped_ix::WrappedInstruction,
+};
 
 /// PolicyKind discriminant byte. Stored separately in `Policy.kind` so off-chain
 /// clients can filter via `getProgramAccounts` memcmp at a fixed offset without
@@ -11,31 +31,34 @@ use crate::state::counter::{CounterState, SpendState};
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[borsh(use_discriminant = true)]
 pub enum PolicyKind {
-    ProgramAllowlist = 0,
-    ProgramBlocklist = 1,
-    MintAllowlist = 2,
-    MintBlocklist = 3,
-    NftCollectionAllowlist = 4,
-    NftCollectionBlocklist = 5,
-    RateLimit = 6,
-    SpendCap = 7,
-    Expiry = 8,
-    ForeignSignerNotAllowed = 9,
-    CooldownPeriod = 10,
-    AmountPerCall = 11,
-    MaxCallsTotal = 12,
-    TimeOfDayWindow = 13,
-    MaxIxSize = 14,
-    NftCreatorAllowlist = 15,
-    MinDelegateBalance = 16,
-    IxDiscriminatorAllowlist = 17,
-    RequireMemo = 18,
-    NoAccountClose = 19,
-    PerCounterpartyCap = 20,
-    PerProgramSpendCap = 21,
-    MaxComputeUnits = 22,
-    MaxPriorityFee = 23,
-    TokenAuthorityGuard = 24,
+    /// Sentinel for a freshly-created, not-yet-written policy account. MUST stay
+    /// at discriminant 0, in lock-step with `PolicyData::Uninitialized`.
+    Uninitialized = 0,
+    ProgramAllowlist = 1,
+    ProgramBlocklist = 2,
+    MintAllowlist = 3,
+    MintBlocklist = 4,
+    NftCollectionAllowlist = 5,
+    NftCollectionBlocklist = 6,
+    RateLimit = 7,
+    SpendCap = 8,
+    Expiry = 9,
+    ForeignSignerNotAllowed = 10,
+    CooldownPeriod = 11,
+    AmountPerCall = 12,
+    MaxCallsTotal = 13,
+    TimeOfDayWindow = 14,
+    MaxIxSize = 15,
+    NftCreatorAllowlist = 16,
+    MinDelegateBalance = 17,
+    IxDiscriminatorAllowlist = 18,
+    RequireMemo = 19,
+    NoAccountClose = 20,
+    PerCounterpartyCap = 21,
+    PerProgramSpendCap = 22,
+    MaxComputeUnits = 23,
+    MaxPriorityFee = 24,
+    TokenAuthorityGuard = 25,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -55,6 +78,7 @@ pub enum Asset {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PolicyData {
+    Uninitialized,
     ProgramAllowlist {
         programs: Vec<Pubkey>,
     },
@@ -119,7 +143,7 @@ pub enum PolicyData {
     },
     IxDiscriminatorAllowlist {
         program: Pubkey,
-        discriminators: Vec<[u8; 8]>,
+        discriminators: Vec<Vec<u8>>,
     },
     RequireMemo {
         memo_program: Pubkey,
@@ -151,104 +175,73 @@ impl PolicyData {
     pub fn validate<'info>(
         &self,
         clock: &Clock,
-        wrapped_ix: &crate::state::wrapped_ix::WrappedInstruction,
+        wrapped_ix: &WrappedInstruction,
         ix_accounts: &[AccountInfo<'info>],
         sysvar_ai: &AccountInfo<'info>,
     ) -> Result<()> {
-        use crate::policies::expiry::check_expiry;
-        use crate::policies::mint_allowlist::{check_mint_allowlist, check_mint_blocklist};
-        use crate::policies::program_allowlist::{
-            check_program_allowlist, check_program_blocklist,
-        };
         match self {
             PolicyData::Expiry { not_after } => check_expiry(*not_after, clock.unix_timestamp),
+            PolicyData::IxDiscriminatorAllowlist {
+                program,
+                discriminators,
+            } => check_ix_discriminator_allowlist(
+                program,
+                discriminators,
+                &wrapped_ix.program_id,
+                &wrapped_ix.data,
+            ),
+            PolicyData::MaxComputeUnits { max } => check_max_compute_units(*max, sysvar_ai),
+            PolicyData::MaxIxSize {
+                max_accounts,
+                max_data_len,
+            } => check_max_ix_size(
+                wrapped_ix.accounts.len(),
+                wrapped_ix.data.len(),
+                *max_accounts,
+                *max_data_len,
+            ),
+            PolicyData::MaxPriorityFee { max_micro_lamports } => {
+                check_max_priority_fee(*max_micro_lamports, sysvar_ai)
+            }
+            PolicyData::MintAllowlist { mints } => check_mint_allowlist(mints, ix_accounts),
+            PolicyData::MintBlocklist { mints } => check_mint_blocklist(mints, ix_accounts),
+            PolicyData::NftCollectionAllowlist { collections } => {
+                check_nft_collection_allowlist(collections, ix_accounts)
+            }
+            PolicyData::NftCollectionBlocklist { collections } => {
+                check_nft_collection_blocklist(collections, ix_accounts)
+            }
+            PolicyData::NftCreatorAllowlist { creators } => {
+                check_nft_creator_allowlist(creators, ix_accounts)
+            }
+            PolicyData::NoAccountClose => {
+                check_no_account_close(&wrapped_ix.program_id, &wrapped_ix.data)
+            }
             PolicyData::ProgramAllowlist { programs } => {
                 check_program_allowlist(programs, &wrapped_ix.program_id)
             }
             PolicyData::ProgramBlocklist { programs } => {
                 check_program_blocklist(programs, &wrapped_ix.program_id)
             }
-            PolicyData::MintAllowlist { mints } => check_mint_allowlist(mints, ix_accounts),
-            PolicyData::MintBlocklist { mints } => check_mint_blocklist(mints, ix_accounts),
-            PolicyData::NftCollectionAllowlist { collections } => {
-                crate::policies::nft_collection::check_nft_collection_allowlist(
-                    collections,
-                    ix_accounts,
-                )
-            }
-            PolicyData::NftCollectionBlocklist { collections } => {
-                crate::policies::nft_collection::check_nft_collection_blocklist(
-                    collections,
-                    ix_accounts,
-                )
-            }
+            PolicyData::RequireMemo { memo_program } => check_require_memo(memo_program, sysvar_ai),
             PolicyData::TimeOfDayWindow {
                 start_minute,
                 end_minute,
                 days_mask,
-            } => crate::policies::time_of_day::check_time_of_day(
-                clock.unix_timestamp,
-                *start_minute,
-                *end_minute,
-                *days_mask,
-            ),
-            PolicyData::MaxIxSize {
-                max_accounts,
-                max_data_len,
-            } => crate::policies::max_ix_size::check_max_ix_size(
-                wrapped_ix.accounts.len(),
-                wrapped_ix.data.len(),
-                *max_accounts,
-                *max_data_len,
-            ),
-            PolicyData::NftCreatorAllowlist { creators } => {
-                crate::policies::nft_creator_allowlist::check_nft_creator_allowlist(
-                    creators,
-                    ix_accounts,
-                )
-            }
-            PolicyData::IxDiscriminatorAllowlist {
-                program,
-                discriminators,
-            } => crate::policies::ix_discriminator_allowlist::check_ix_discriminator_allowlist(
-                program,
-                discriminators,
-                &wrapped_ix.program_id,
-                &wrapped_ix.data,
-            ),
-            PolicyData::RequireMemo { memo_program } => {
-                crate::policies::require_memo::check_require_memo(memo_program, sysvar_ai)
-            }
-            PolicyData::NoAccountClose => {
-                crate::policies::no_account_close::check_no_account_close(
-                    &wrapped_ix.program_id,
-                    &wrapped_ix.data,
-                )
-            }
+            } => check_time_of_day(clock.unix_timestamp, *start_minute, *end_minute, *days_mask),
             PolicyData::TokenAuthorityGuard => {
-                crate::policies::token_authority_guard::check_token_authority_guard(
-                    &wrapped_ix.program_id,
-                    &wrapped_ix.data,
-                )
+                check_token_authority_guard(&wrapped_ix.program_id, &wrapped_ix.data)
             }
-            PolicyData::MaxComputeUnits { max } => {
-                crate::policies::max_compute_units::check_max_compute_units(*max, sysvar_ai)
-            }
-            PolicyData::MaxPriorityFee { max_micro_lamports } => {
-                crate::policies::max_priority_fee::check_max_priority_fee(
-                    *max_micro_lamports,
-                    sysvar_ai,
-                )
-            }
-            PolicyData::RateLimit { .. }
-            | PolicyData::SpendCap { .. }
-            | PolicyData::ForeignSignerNotAllowed
+            PolicyData::Uninitialized => Err(error!(BastionError::InvalidPolicyData)),
+            PolicyData::AmountPerCall { .. }
             | PolicyData::CooldownPeriod { .. }
-            | PolicyData::AmountPerCall { .. }
+            | PolicyData::ForeignSignerNotAllowed
             | PolicyData::MaxCallsTotal { .. }
             | PolicyData::MinDelegateBalance { .. }
             | PolicyData::PerCounterpartyCap { .. }
-            | PolicyData::PerProgramSpendCap { .. } => Ok(()),
+            | PolicyData::PerProgramSpendCap { .. }
+            | PolicyData::RateLimit { .. }
+            | PolicyData::SpendCap { .. } => Ok(()),
         }
     }
 
@@ -258,52 +251,53 @@ impl PolicyData {
     pub fn is_stateless(&self) -> bool {
         matches!(
             self,
-            PolicyData::ProgramAllowlist { .. }
-                | PolicyData::ProgramBlocklist { .. }
+            PolicyData::Expiry { .. }
+                | PolicyData::ForeignSignerNotAllowed
+                | PolicyData::IxDiscriminatorAllowlist { .. }
+                | PolicyData::MaxComputeUnits { .. }
+                | PolicyData::MaxIxSize { .. }
+                | PolicyData::MaxPriorityFee { .. }
                 | PolicyData::MintAllowlist { .. }
                 | PolicyData::MintBlocklist { .. }
                 | PolicyData::NftCollectionAllowlist { .. }
                 | PolicyData::NftCollectionBlocklist { .. }
                 | PolicyData::NftCreatorAllowlist { .. }
-                | PolicyData::IxDiscriminatorAllowlist { .. }
-                | PolicyData::Expiry { .. }
-                | PolicyData::ForeignSignerNotAllowed
-                | PolicyData::TimeOfDayWindow { .. }
-                | PolicyData::MaxIxSize { .. }
                 | PolicyData::NoAccountClose
+                | PolicyData::ProgramAllowlist { .. }
+                | PolicyData::ProgramBlocklist { .. }
                 | PolicyData::RequireMemo { .. }
-                | PolicyData::MaxComputeUnits { .. }
-                | PolicyData::MaxPriorityFee { .. }
+                | PolicyData::TimeOfDayWindow { .. }
                 | PolicyData::TokenAuthorityGuard
         )
     }
 
     pub fn kind(&self) -> PolicyKind {
         match self {
-            PolicyData::ProgramAllowlist { .. } => PolicyKind::ProgramAllowlist,
-            PolicyData::ProgramBlocklist { .. } => PolicyKind::ProgramBlocklist,
+            PolicyData::Uninitialized => PolicyKind::Uninitialized,
+            PolicyData::AmountPerCall { .. } => PolicyKind::AmountPerCall,
+            PolicyData::CooldownPeriod { .. } => PolicyKind::CooldownPeriod,
+            PolicyData::Expiry { .. } => PolicyKind::Expiry,
+            PolicyData::ForeignSignerNotAllowed => PolicyKind::ForeignSignerNotAllowed,
+            PolicyData::IxDiscriminatorAllowlist { .. } => PolicyKind::IxDiscriminatorAllowlist,
+            PolicyData::MaxCallsTotal { .. } => PolicyKind::MaxCallsTotal,
+            PolicyData::MaxComputeUnits { .. } => PolicyKind::MaxComputeUnits,
+            PolicyData::MaxIxSize { .. } => PolicyKind::MaxIxSize,
+            PolicyData::MaxPriorityFee { .. } => PolicyKind::MaxPriorityFee,
+            PolicyData::MinDelegateBalance { .. } => PolicyKind::MinDelegateBalance,
             PolicyData::MintAllowlist { .. } => PolicyKind::MintAllowlist,
             PolicyData::MintBlocklist { .. } => PolicyKind::MintBlocklist,
             PolicyData::NftCollectionAllowlist { .. } => PolicyKind::NftCollectionAllowlist,
             PolicyData::NftCollectionBlocklist { .. } => PolicyKind::NftCollectionBlocklist,
-            PolicyData::RateLimit { .. } => PolicyKind::RateLimit,
-            PolicyData::SpendCap { .. } => PolicyKind::SpendCap,
-            PolicyData::Expiry { .. } => PolicyKind::Expiry,
-            PolicyData::ForeignSignerNotAllowed => PolicyKind::ForeignSignerNotAllowed,
-            PolicyData::CooldownPeriod { .. } => PolicyKind::CooldownPeriod,
-            PolicyData::AmountPerCall { .. } => PolicyKind::AmountPerCall,
-            PolicyData::MaxCallsTotal { .. } => PolicyKind::MaxCallsTotal,
-            PolicyData::TimeOfDayWindow { .. } => PolicyKind::TimeOfDayWindow,
-            PolicyData::MaxIxSize { .. } => PolicyKind::MaxIxSize,
             PolicyData::NftCreatorAllowlist { .. } => PolicyKind::NftCreatorAllowlist,
-            PolicyData::MinDelegateBalance { .. } => PolicyKind::MinDelegateBalance,
-            PolicyData::IxDiscriminatorAllowlist { .. } => PolicyKind::IxDiscriminatorAllowlist,
-            PolicyData::RequireMemo { .. } => PolicyKind::RequireMemo,
             PolicyData::NoAccountClose => PolicyKind::NoAccountClose,
             PolicyData::PerCounterpartyCap { .. } => PolicyKind::PerCounterpartyCap,
             PolicyData::PerProgramSpendCap { .. } => PolicyKind::PerProgramSpendCap,
-            PolicyData::MaxComputeUnits { .. } => PolicyKind::MaxComputeUnits,
-            PolicyData::MaxPriorityFee { .. } => PolicyKind::MaxPriorityFee,
+            PolicyData::ProgramAllowlist { .. } => PolicyKind::ProgramAllowlist,
+            PolicyData::ProgramBlocklist { .. } => PolicyKind::ProgramBlocklist,
+            PolicyData::RateLimit { .. } => PolicyKind::RateLimit,
+            PolicyData::RequireMemo { .. } => PolicyKind::RequireMemo,
+            PolicyData::SpendCap { .. } => PolicyKind::SpendCap,
+            PolicyData::TimeOfDayWindow { .. } => PolicyKind::TimeOfDayWindow,
             PolicyData::TokenAuthorityGuard => PolicyKind::TokenAuthorityGuard,
         }
     }
@@ -314,46 +308,63 @@ impl PolicyData {
 
     pub fn normalize(&mut self) {
         match self {
-            PolicyData::ProgramAllowlist { programs }
-            | PolicyData::ProgramBlocklist { programs } => programs.sort_unstable(),
+            PolicyData::IxDiscriminatorAllowlist { discriminators, .. } => {
+                discriminators.sort_unstable()
+            }
             PolicyData::MintAllowlist { mints } | PolicyData::MintBlocklist { mints } => {
                 mints.sort_unstable()
             }
             PolicyData::NftCollectionAllowlist { collections }
             | PolicyData::NftCollectionBlocklist { collections } => collections.sort_unstable(),
             PolicyData::NftCreatorAllowlist { creators } => creators.sort_unstable(),
-            PolicyData::IxDiscriminatorAllowlist { discriminators, .. } => {
-                discriminators.sort_unstable()
-            }
+            PolicyData::ProgramAllowlist { programs }
+            | PolicyData::ProgramBlocklist { programs } => programs.sort_unstable(),
             _ => {}
         }
     }
 
     pub fn validate_attach_params(&self) -> anchor_lang::prelude::Result<()> {
-        use crate::constants::MAX_PROGRAMS_PER_LIST;
-        use crate::error::BastionError;
+        require!(
+            !matches!(self, PolicyData::Uninitialized),
+            BastionError::InvalidPolicyData
+        );
 
         let asset_opt = match self {
-            PolicyData::SpendCap { asset, .. }
-            | PolicyData::AmountPerCall { asset, .. }
+            PolicyData::AmountPerCall { asset, .. }
             | PolicyData::PerCounterpartyCap { asset, .. }
-            | PolicyData::PerProgramSpendCap { asset, .. } => Some(asset),
+            | PolicyData::PerProgramSpendCap { asset, .. }
+            | PolicyData::SpendCap { asset, .. } => Some(asset),
             _ => None,
         };
-        if let Some(Asset::NftCountInCollection(_) | Asset::AnyNftCount) = asset_opt {
+        if let Some(Asset::AnyNftCount | Asset::NftCountInCollection(_)) = asset_opt {
             return Err(error!(BastionError::InvalidPolicyData));
         }
 
         match self {
-            PolicyData::TimeOfDayWindow {
-                start_minute,
-                end_minute,
-                days_mask,
-            } => {
-                require!(*start_minute < *end_minute, BastionError::InvalidPolicyData);
-                require!(*end_minute <= 1440, BastionError::InvalidPolicyData);
-                require!(*days_mask != 0, BastionError::InvalidPolicyData);
-                require!((*days_mask & 0x80) == 0, BastionError::InvalidPolicyData);
+            PolicyData::IxDiscriminatorAllowlist { discriminators, .. } => {
+                require!(!discriminators.is_empty(), BastionError::InvalidPolicyData);
+                require!(
+                    discriminators.len() <= MAX_PROGRAMS_PER_LIST,
+                    BastionError::ListTooLong
+                );
+                // Each entry is a 1..=MAX_DISCRIMINATOR_LEN byte leading prefix of
+                // the inner ix data (the program's tag, optionally + leading arg
+                // bytes to pin values). A zero-length entry would prefix-match
+                // every instruction (allow-all bypass); over-long entries bloat
+                // the account. Reject both.
+                for d in discriminators {
+                    require!(
+                        (1..=MAX_DISCRIMINATOR_LEN).contains(&d.len()),
+                        BastionError::InvalidPolicyData
+                    );
+                }
+            }
+            PolicyData::MaxCallsTotal { max, used } => {
+                require!(*used == 0, BastionError::InvalidPolicyData);
+                require!(*max > 0, BastionError::InvalidPolicyData);
+            }
+            PolicyData::MaxComputeUnits { max } => {
+                require!(*max > 0, BastionError::InvalidPolicyData);
             }
             PolicyData::MaxIxSize {
                 max_accounts,
@@ -362,24 +373,13 @@ impl PolicyData {
                 require!(*max_accounts > 0, BastionError::InvalidPolicyData);
                 require!(*max_data_len > 0, BastionError::InvalidPolicyData);
             }
-            PolicyData::MaxCallsTotal { max, used } => {
-                require!(*used == 0, BastionError::InvalidPolicyData);
-                require!(*max > 0, BastionError::InvalidPolicyData);
+            PolicyData::MinDelegateBalance { floor } => {
+                require!(*floor > 0, BastionError::InvalidPolicyData);
             }
             PolicyData::NftCreatorAllowlist { creators } => {
                 require!(!creators.is_empty(), BastionError::InvalidPolicyData);
                 require!(
                     creators.len() <= MAX_PROGRAMS_PER_LIST,
-                    BastionError::ListTooLong
-                );
-            }
-            PolicyData::MinDelegateBalance { floor } => {
-                require!(*floor > 0, BastionError::InvalidPolicyData);
-            }
-            PolicyData::IxDiscriminatorAllowlist { discriminators, .. } => {
-                require!(!discriminators.is_empty(), BastionError::InvalidPolicyData);
-                require!(
-                    discriminators.len() <= MAX_PROGRAMS_PER_LIST,
                     BastionError::ListTooLong
                 );
             }
@@ -390,12 +390,63 @@ impl PolicyData {
             PolicyData::PerProgramSpendCap { max, .. } => {
                 require!(*max > 0, BastionError::InvalidPolicyData);
             }
-            PolicyData::MaxComputeUnits { max } => {
-                require!(*max > 0, BastionError::InvalidPolicyData);
+            PolicyData::TimeOfDayWindow {
+                start_minute,
+                end_minute,
+                days_mask,
+            } => {
+                require!(*start_minute < *end_minute, BastionError::InvalidPolicyData);
+                require!(*end_minute <= 1440, BastionError::InvalidPolicyData);
+                require!(*days_mask != 0, BastionError::InvalidPolicyData);
+                require!((*days_mask & 0x80) == 0, BastionError::InvalidPolicyData);
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// On `update_policy`, resume the existing policy's accumulated runtime state
+    /// into the replacement config, so a config edit (e.g. raising `max`) never
+    /// wipes it. Only the runtime counters/timestamps are carried; everything
+    /// else comes from the new value. Caller guarantees `self.kind() ==
+    /// old.kind()`; non-stateful kinds are a no-op.
+    pub fn carry_state_from(&mut self, old: &PolicyData) {
+        match (self, old) {
+            (
+                PolicyData::RateLimit { state, .. },
+                PolicyData::RateLimit {
+                    state: old_state, ..
+                },
+            ) => *state = *old_state,
+            (
+                PolicyData::SpendCap { state, .. },
+                PolicyData::SpendCap {
+                    state: old_state, ..
+                },
+            ) => *state = *old_state,
+            (
+                PolicyData::PerProgramSpendCap { state, .. },
+                PolicyData::PerProgramSpendCap {
+                    state: old_state, ..
+                },
+            ) => *state = *old_state,
+            (
+                PolicyData::CooldownPeriod { last_call_ts, .. },
+                PolicyData::CooldownPeriod {
+                    last_call_ts: old_ts,
+                    ..
+                },
+            ) => *last_call_ts = *old_ts,
+            (
+                PolicyData::MaxCallsTotal { used, .. },
+                PolicyData::MaxCallsTotal { used: old_used, .. },
+            ) => *used = *old_used,
+            (
+                PolicyData::PerCounterpartyCap { sent, .. },
+                PolicyData::PerCounterpartyCap { sent: old_sent, .. },
+            ) => *sent = *old_sent,
+            _ => {}
+        }
     }
 }
 
@@ -403,7 +454,7 @@ impl PolicyData {
 /// variable-size Borsh enum (see `PolicyData::serialized_len`), so a single
 /// `INIT_SPACE` constant would be meaningless. Allocation is done via the
 /// `Policy::size_for(&data)` function which sums Anchor discriminator +
-/// fixed header + actual serialised data length (floored to MIN_DATA_LEN).
+/// fixed header + actual serialised data length.
 #[account]
 pub struct Policy {
     pub session: Pubkey,
@@ -423,20 +474,19 @@ impl Policy {
         .checked_add(1).expect("Policy::HEADER_LEN overflow")  // enabled: bool
         .checked_add(8).expect("Policy::HEADER_LEN overflow"); // created_at: i64
 
-    pub const MIN_DATA_LEN: usize = 5;
-
     /// Total bytes (Anchor discriminator + header + serialised data) required to
     /// store a Policy whose `data` field equals the supplied value.
     ///
-    /// Uses `Self::DISCRIMINATOR.len()` instead of a literal `8` so we stay in
-    /// lock-step with whatever Anchor's discriminator length is (currently 8 bytes;
-    /// future-proof). `saturating_add` is fine here because overflow is
-    /// mathematically unreachable: 8 (disc) + 51 (HEADER_LEN) + ≤ ~32 KB of
-    /// PolicyData payload is always orders of magnitude below `usize::MAX`.
-    /// Returning `usize::MAX` on the impossible saturation path would just
-    /// make Anchor's `init` fail at allocate-account time anyway.
+    /// No artificial floor is needed: Anchor's init-time decode of a zero account
+    /// only ever reads PolicyData tag 0 (`Uninitialized`, a zero-payload unit
+    /// variant = 1 byte), which fits in any account. The `.max(1)` only guards the
+    /// unreachable `serialized_len() == 0` path from `object_length`'s error case.
+    ///
+    /// Uses `Self::DISCRIMINATOR.len()` instead of a literal `8` to stay in
+    /// lock-step with Anchor's discriminator length. `saturating_add` is fine:
+    /// 8 (disc) + 51 (HEADER_LEN) + ≤ ~32 KB of payload is far below `usize::MAX`.
     pub fn size_for(data: &PolicyData) -> usize {
-        let data_len = data.serialized_len().max(Self::MIN_DATA_LEN);
+        let data_len = data.serialized_len().max(1);
         Self::DISCRIMINATOR
             .len()
             .saturating_add(Self::HEADER_LEN)
@@ -667,8 +717,59 @@ mod tests {
     }
 
     #[test]
-    fn size_for_foreign_signer_not_allowed_floored_at_min() {
+    fn size_for_foreign_signer_not_allowed() {
         let data = PolicyData::ForeignSignerNotAllowed;
-        assert_eq!(Policy::size_for(&data), 8 + 51 + Policy::MIN_DATA_LEN);
+        assert_eq!(Policy::size_for(&data), 8 + 51 + 1);
+    }
+
+    #[test]
+    fn uninitialized_sentinel_rejected_on_attach() {
+        assert!(PolicyData::Uninitialized.validate_attach_params().is_err());
+    }
+
+    #[test]
+    fn roundtrip_ix_discriminator_allowlist_variable_len() {
+        assert_roundtrip(&PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![3], vec![2, 0, 0, 0], vec![9; 8]],
+        });
+    }
+
+    #[test]
+    fn ix_discriminator_attach_accepts_mixed_lengths() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![3], vec![2, 0, 0, 0], vec![9; 8], vec![1; 12]],
+        };
+        assert!(data.validate_attach_params().is_ok());
+    }
+
+    #[test]
+    fn ix_discriminator_attach_rejects_empty_entry() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![]],
+        };
+        assert!(data.validate_attach_params().is_err());
+    }
+
+    #[test]
+    fn ix_discriminator_attach_rejects_oversize_entry() {
+        let data = PolicyData::IxDiscriminatorAllowlist {
+            program: pk(5),
+            discriminators: vec![vec![0u8; 33]],
+        };
+        assert!(data.validate_attach_params().is_err());
+    }
+
+    #[test]
+    fn zeroed_account_decodes_as_uninitialized() {
+        let smallest = PolicyData::ForeignSignerNotAllowed;
+        let size = Policy::size_for(&smallest);
+        let zeros = vec![0u8; size];
+        let mut slice: &[u8] = &zeros;
+        let p = <Policy as anchor_lang::AccountDeserialize>::try_deserialize_unchecked(&mut slice)
+            .expect("zero account must decode (Anchor init invariant)");
+        assert!(matches!(p.data, PolicyData::Uninitialized));
     }
 }

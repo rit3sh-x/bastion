@@ -261,7 +261,7 @@ impl SpendState {
 
 #[cfg(test)]
 mod tests {
-    use crate::assert_anchor_error;
+    use crate::utils::general::assert_anchor_error;
 
     use super::*;
 

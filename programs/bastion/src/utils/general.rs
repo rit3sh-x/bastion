@@ -12,6 +12,16 @@ where
 }
 
 #[cfg(test)]
+pub(crate) fn make_account_info<'a>(
+    key: &'a Pubkey,
+    owner: &'a Pubkey,
+    lamports: &'a mut u64,
+    data: &'a mut [u8],
+) -> AccountInfo<'a> {
+    AccountInfo::new(key, false, false, lamports, data, owner, false)
+}
+
+#[cfg(test)]
 pub fn assert_anchor_error<T, E>(result: anchor_lang::Result<T>, expected: E)
 where
     E: Into<u32> + Copy + std::fmt::Debug,

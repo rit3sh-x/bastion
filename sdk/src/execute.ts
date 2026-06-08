@@ -29,14 +29,12 @@ import {
     fetchAllPolicy,
     type CompactAccountMeta,
     type Policy,
+    COMPUTE_BUDGET_ID,
 } from "./generated";
 import { wrapSendError } from "./errors";
 
 const BASTION_FLAG_SIGNER = 0b01;
 const BASTION_FLAG_WRITABLE = 0b10;
-
-const COMPUTE_BUDGET_PROGRAM_ADDRESS =
-    "ComputeBudget111111111111111111111111111111" as Address;
 
 export interface WrappedInner {
     programId: Address;
@@ -89,9 +87,7 @@ export interface WrappedLeg {
 
 export interface WrappedBatch {
     legs: WrappedLeg[];
-    /** Shared account pool every leg's CompactAccountMeta indexes into. */
     innerMetas: AccountMeta[];
-    /** Distinct wrapped program ids (must be present in the tx account list). */
     programIds: Address[];
 }
 
@@ -174,7 +170,7 @@ function setComputeUnitLimitIx(limit: number): Instruction {
     data[0] = 2;
     new DataView(data.buffer).setUint32(1, limit, true);
     return {
-        programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        programAddress: COMPUTE_BUDGET_ID,
         accounts: [],
         data,
     };
@@ -190,7 +186,7 @@ function setComputeUnitPriceIx(microLamports: bigint): Instruction {
     data[0] = 3;
     new DataView(data.buffer).setBigUint64(1, microLamports, true);
     return {
-        programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        programAddress: COMPUTE_BUDGET_ID,
         accounts: [],
         data,
     };
@@ -259,9 +255,6 @@ export async function planExecution(
     if (args.computeUnitLimit !== undefined) {
         outerIxs.push(setComputeUnitLimitIx(args.computeUnitLimit));
     } else if (hasCuPolicy || legCount > 1) {
-        // auto-size when a CU policy constrains us, or when a multi-leg batch
-        // would blow past the 200k network default. Never exceed a
-        // MaxComputeUnits policy ceiling — that would self-reject.
         let cu = estimateComputeUnits(kinds, legCount);
         if (cuPolicyMax !== undefined) cu = Math.min(cu, cuPolicyMax);
         outerIxs.push(setComputeUnitLimitIx(cu));
@@ -284,11 +277,6 @@ export interface SendArgs {
     feePayer: TransactionSigner;
     instructions: readonly Instruction[];
     commitment?: Commitment;
-    /**
-     * `{ [lookupTableAddress]: addresses[] }`. When present, the message is
-     * compressed against these tables so it can reference far more accounts than
-     * the ~64-key static limit. The tables must already exist on-chain.
-     */
     addressLookupTables?: Record<Address, Address[]>;
 }
 

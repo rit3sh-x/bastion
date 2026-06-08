@@ -9,11 +9,11 @@ pub mod policies;
 pub mod state;
 pub mod utils;
 
-pub use constants::*;
-pub use error::*;
-pub use instructions::*;
-pub use state::*;
-pub use utils::*;
+pub use instructions::{
+    attach_policy::*, close_session::*, detach_policy::*, execute::*, extend_session::*,
+    init_session::*, pin_manifest::*, revoke_session::*, sweep_delegate::*, update_policy::*,
+};
+use state::{policy::PolicyData, wrapped_ix::WrappedInstruction};
 
 declare_id!("GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1");
 

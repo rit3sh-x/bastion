@@ -31,6 +31,10 @@ import {
     type Policy,
     type PolicyDataArgs,
     type Session,
+    MPL_TOKEN_METADATA_ID,
+    SEED_DELEGATE,
+    SEED_METADATA,
+    SEED_SESSION,
 } from "./generated";
 import type { ResolvedBastionConfig } from "./config";
 import {
@@ -44,13 +48,6 @@ import { withHooks } from "./hooks";
 import type { Logger } from "./logger";
 import { generateSessionKey, type SessionSigner } from "./wallet";
 import { associatedTokenAddress, buildApproveIx, buildRevokeIx } from "./token";
-
-export const MPL_TOKEN_METADATA_ADDRESS =
-    "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s" as Address;
-
-const SEED_SESSION = new TextEncoder().encode("session");
-const SEED_DELEGATE = new TextEncoder().encode("delegate");
-const SEED_METADATA = new TextEncoder().encode("metadata");
 
 export interface PdaDerivation {
     session(
@@ -94,10 +91,10 @@ export const pda: PdaDerivation = {
     },
     async metadata(mint) {
         return getProgramDerivedAddress({
-            programAddress: MPL_TOKEN_METADATA_ADDRESS,
+            programAddress: MPL_TOKEN_METADATA_ID,
             seeds: [
                 SEED_METADATA,
-                getAddressEncoder().encode(MPL_TOKEN_METADATA_ADDRESS),
+                getAddressEncoder().encode(MPL_TOKEN_METADATA_ID),
                 getAddressEncoder().encode(mint),
             ],
         });
@@ -517,9 +514,6 @@ function createSessionHandle(args: SessionHandleArgs): SessionHandle {
                 recentSlot,
                 bump,
             });
-            // Each Extend is bounded by the 1232-byte tx limit (~30 addrs at
-            // 32 bytes each). Chunk conservatively: create + first chunk in one
-            // tx, then one Extend tx per remaining chunk.
             const CHUNK = 20;
             const chunks: Address[][] = [];
             for (let i = 0; i < addresses.length; i += CHUNK) {

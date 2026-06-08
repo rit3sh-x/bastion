@@ -1,16 +1,16 @@
 import { address, type Address } from "@solana/kit";
 import {
+    AmountPerCall,
     asset,
-    days,
-    hours,
-    microLamports,
-    policyData,
-    sol,
-    tokens,
-    windowKind,
-    EMPTY_SPEND_STATE,
+    CooldownPeriod,
+    MaxCallsTotal,
+    MaxComputeUnits,
+    MaxPriorityFee,
+    SpendCap,
+    window,
     type PolicyDataArgs,
-} from "bastion";
+} from "bastion/policies";
+import { days, hours, microLamports, sol, tokens } from "bastion/units";
 
 import type { Env } from "./env";
 
@@ -57,33 +57,21 @@ export function activeCaps(mode: SpendMode): ActiveCaps {
 }
 
 export function buildPolicies(mode: SpendMode): PolicyDataArgs[] {
-    const spendAsset = mode.mint
-        ? asset("SplToken", [mode.mint])
-        : asset("NativeSol");
+    const spendAsset = mode.mint ? asset.splToken(mode.mint) : asset.sol();
     const toBase = (whole: number): bigint =>
         mode.mint ? tokens(whole, mode.decimals) : sol(whole);
     const caps = mode.mint ? LIMITS.token : LIMITS.sol;
 
     return [
-        policyData("SpendCap", {
+        SpendCap({
             asset: spendAsset,
-            window: windowKind("Fixed", { secs: days(1) }),
+            window: window.fixed(days(1)),
             max: toBase(caps.lifetime),
-            state: EMPTY_SPEND_STATE,
         }),
-        policyData("AmountPerCall", {
-            asset: spendAsset,
-            max: toBase(caps.perTrade),
-        }),
-        policyData("MaxCallsTotal", { max: LIMITS.totalCalls, used: 0n }),
-        policyData("CooldownPeriod", {
-            secs: LIMITS.cooldownSecs,
-            lastCallTs: 0n,
-            scope: null,
-        }),
-        policyData("MaxPriorityFee", {
-            maxMicroLamports: LIMITS.priorityFeeCap,
-        }),
-        policyData("MaxComputeUnits", { max: LIMITS.cuLimit }),
+        AmountPerCall({ asset: spendAsset, max: toBase(caps.perTrade) }),
+        MaxCallsTotal({ max: LIMITS.totalCalls }),
+        CooldownPeriod({ secs: LIMITS.cooldownSecs }),
+        MaxPriorityFee({ maxMicroLamports: LIMITS.priorityFeeCap }),
+        MaxComputeUnits({ max: LIMITS.cuLimit }),
     ];
 }

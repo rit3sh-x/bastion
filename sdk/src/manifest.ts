@@ -4,10 +4,11 @@ import {
     type Address,
     type Instruction,
 } from "@solana/kit";
-import { getPolicyDataEncoder, type PolicyDataArgs } from "./generated";
-
-export const ED25519_PROGRAM_ADDRESS =
-    "Ed25519SigVerify111111111111111111111111111" as Address;
+import {
+    getPolicyDataEncoder,
+    type PolicyDataArgs,
+    ED25519_PROGRAM_ID,
+} from "./generated";
 
 /**
  * The commitment a holder signs and pins: `sha256(borsh(Vec<PolicyData>))`.
@@ -58,7 +59,7 @@ export function buildEd25519Instruction(args: {
     data.set(signature, sigOffset);
     data.set(message, msgOffset);
 
-    return { programAddress: ED25519_PROGRAM_ADDRESS, accounts: [], data };
+    return { programAddress: ED25519_PROGRAM_ID, accounts: [], data };
 }
 
 /** 32-byte ed25519 public key bytes for an address. */
