@@ -77,13 +77,15 @@ impl<'info> AttachPolicy<'info> {
         let kind_byte = data.kind() as u8;
 
         let policy = &mut self.policy;
-        policy.session = session_key;
-        policy.seed = new_seed;
-        policy.bump = bumps.policy;
-        policy.kind = kind_byte;
-        policy.enabled = true;
-        policy.created_at = now;
-        policy.data = data;
+        policy.set_inner(Policy {
+            session: session_key,
+            seed: new_seed,
+            bump: bumps.policy,
+            kind: kind_byte,
+            enabled: true,
+            created_at: now,
+            data,
+        });
 
         existing_keys.push(new_policy_key);
         let new_hash = compute_policies_hash(&existing_keys);

@@ -42,7 +42,7 @@ pub fn check_token_authority_guard(ix_program: &Pubkey, ix_data: &[u8]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::pk;
+    use crate::utils::general::pk;
 
     #[test]
     fn blocks_approve_on_spl_token() {

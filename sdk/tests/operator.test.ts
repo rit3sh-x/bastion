@@ -12,11 +12,11 @@ import {
     type OperatorCredential,
 } from "@/operator";
 import { generateExtractableSessionKey, sessionKeyFromSecret } from "@/wallet";
+import { COMPUTE_BUDGET_ID } from "@/generated";
 
 const SYS = address("11111111111111111111111111111111");
 const TOK = address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const WSOL = address("So11111111111111111111111111111111111111112");
-const CB = address("ComputeBudget111111111111111111111111111111");
 const MEMO = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 
 function ix(
@@ -34,7 +34,7 @@ describe("wrapInnerBatch", () => {
     it("dedups a shared account across legs and merges to the strongest role", () => {
         const leg1 = ix(SYS, [
             { address: WSOL, role: AccountRole.WRITABLE },
-            { address: CB, role: AccountRole.READONLY },
+            { address: COMPUTE_BUDGET_ID, role: AccountRole.READONLY },
         ]);
         const leg2 = ix(TOK, [
             { address: WSOL, role: AccountRole.READONLY },
@@ -43,15 +43,15 @@ describe("wrapInnerBatch", () => {
 
         const batch = wrapInnerBatch([leg1, leg2]);
 
-        // shared pool: WSOL, CB, MEMO (WSOL appears once, merged writable)
+        // shared pool: WSOL, COMPUTE_BUDGET_ID, MEMO (WSOL appears once, merged writable)
         expect(batch.innerMetas.map((m) => m.address)).toEqual([
             WSOL,
-            CB,
+            COMPUTE_BUDGET_ID,
             MEMO,
         ]);
         expect(batch.innerMetas[0]!.role).toBe(AccountRole.WRITABLE);
 
-        // leg-1 indexes [WSOL=0, CB=1]; leg-2 indexes [WSOL=0, MEMO=2]
+        // leg-1 indexes [WSOL=0, COMPUTE_BUDGET_ID=1]; leg-2 indexes [WSOL=0, MEMO=2]
         expect(batch.legs[0]!.accounts.map((a) => a.index)).toEqual([0, 1]);
         expect(batch.legs[1]!.accounts.map((a) => a.index)).toEqual([0, 2]);
 
@@ -77,7 +77,7 @@ describe("operator credential", () => {
         sessionPda: WSOL,
         owner: SYS,
         programId: TOK,
-        policies: [CB, MEMO],
+        policies: [COMPUTE_BUDGET_ID, MEMO],
         rpcUrl: "http://127.0.0.1:8899",
     };
 

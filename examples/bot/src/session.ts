@@ -7,13 +7,13 @@ import {
     parseOperatorCredential,
     serializeOperatorCredential,
     sessionKeyFromSecret,
-    tokens,
     type BastionHooks,
     type HolderClient,
     type OperatorClient,
     type OperatorCredential,
     type SessionHandle,
 } from "bastion";
+import { tokens } from "bastion/units";
 
 import type { Env } from "./env";
 import { buildPolicies, LIMITS, resolveSpendMode } from "./policies";

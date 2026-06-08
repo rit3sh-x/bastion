@@ -2,9 +2,9 @@ mod helpers;
 
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::solana_program::instruction::AccountMeta;
+use bastion::error::BastionError;
 use bastion::state::counter::{CounterState, SpendState};
 use bastion::state::policy::{Asset, PolicyData, WindowKind};
-use bastion::BastionError;
 use solana_signer::Signer;
 
 use crate::helpers::*;

@@ -1,6 +1,7 @@
 mod helpers;
 
 use anchor_lang::prelude::Pubkey;
+use bastion::error::BastionError::SessionNotRevoked;
 use solana_signer::Signer;
 
 use crate::helpers::*;
@@ -21,7 +22,7 @@ fn sweep_rejects_when_session_not_revoked() {
     airdrop(&mut svm, &destination, ONE_SOL);
 
     let res = sweep_delegate(&mut svm, &owner, &session_pda, &delegate_pda, &destination);
-    assert_svm_anchor_error(res, bastion::BastionError::SessionNotRevoked);
+    assert_svm_anchor_error(res, SessionNotRevoked);
 }
 
 #[test]

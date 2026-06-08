@@ -6,7 +6,7 @@ use litesvm::LiteSVM;
 use solana_signer::Signer;
 
 use crate::helpers::*;
-use bastion::BastionError;
+use bastion::error::BastionError;
 
 fn expiry_in(seconds: i64, svm: &LiteSVM) -> i64 {
     now(svm)

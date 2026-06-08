@@ -2,6 +2,7 @@ mod helpers;
 
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::{InstructionData, ToAccountMetas};
+use bastion::constants::ED25519_PROGRAM_ID;
 use bastion::error::BastionError;
 use bastion::state::policy::PolicyData;
 use litesvm::types::FailedTransactionMetadata;
@@ -61,7 +62,7 @@ fn ed25519_ix(signer: &Keypair, message: &[u8]) -> Instruction {
     data.extend_from_slice(message);
 
     Instruction {
-        program_id: bastion::ED25519_PROGRAM_ID,
+        program_id: ED25519_PROGRAM_ID,
         accounts: vec![],
         data,
     }

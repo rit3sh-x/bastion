@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { address } from "@solana/kit";
-import {
-    buildEd25519Instruction,
-    computeManifestHash,
-    ED25519_PROGRAM_ADDRESS,
-} from "@/manifest";
-import { policyData } from "@/generated";
+import { buildEd25519Instruction, computeManifestHash } from "@/manifest";
+import { ED25519_PROGRAM_ID, policyData } from "@/generated";
 
 const SYS = address("11111111111111111111111111111111");
 
@@ -40,7 +36,7 @@ describe("buildEd25519Instruction", () => {
             message: msg,
         });
 
-        expect(ix.programAddress).toBe(ED25519_PROGRAM_ADDRESS);
+        expect(ix.programAddress).toBe(ED25519_PROGRAM_ID);
         expect(ix.accounts).toEqual([]);
 
         const d = ix.data as Uint8Array;

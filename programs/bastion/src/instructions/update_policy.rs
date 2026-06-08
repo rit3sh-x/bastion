@@ -39,48 +39,16 @@ impl<'info> UpdatePolicy<'info> {
 
         let policy = &mut self.policy;
 
-        let existing_kind = policy.kind;
-        let new_kind = new_data.kind() as u8;
+        require!(
+            policy.kind == new_data.kind() as u8,
+            BastionError::PolicyKindMismatch
+        );
 
-        require!(existing_kind == new_kind, BastionError::PolicyKindMismatch);
-
-        let preserved_max_calls = if let (
-            PolicyData::MaxCallsTotal { used: old_used, .. },
-            PolicyData::MaxCallsTotal { max: new_max, .. },
-        ) = (&policy.data, &new_data)
-        {
-            Some((*old_used, *new_max))
-        } else {
-            None
-        };
-
-        let preserved_counterparty = if let (
-            PolicyData::PerCounterpartyCap { sent: old_sent, .. },
-            PolicyData::PerCounterpartyCap { max: new_max, .. },
-        ) = (&policy.data, &new_data)
-        {
-            Some((*old_sent, *new_max))
-        } else {
-            None
-        };
+        // Resume the existing policy's accumulated runtime state so a config edit
+        // (e.g. raising `max`) doesn't wipe counters/spend.
+        new_data.carry_state_from(&policy.data);
 
         policy.data = new_data;
-
-        if let Some((old_used, new_max)) = preserved_max_calls {
-            if let PolicyData::MaxCallsTotal { used, .. } = &mut policy.data {
-                *used = old_used;
-            }
-
-            require!(old_used <= new_max, BastionError::InvalidPolicyData);
-        }
-
-        if let Some((old_sent, new_max)) = preserved_counterparty {
-            if let PolicyData::PerCounterpartyCap { sent, .. } = &mut policy.data {
-                *sent = old_sent;
-            }
-
-            require!(old_sent <= new_max, BastionError::InvalidPolicyData);
-        }
 
         Ok(())
     }

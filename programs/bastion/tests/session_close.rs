@@ -1,8 +1,8 @@
 mod helpers;
 
 use anchor_lang::prelude::Pubkey;
+use bastion::error::BastionError;
 use bastion::state::policy::PolicyData;
-use bastion::BastionError;
 use solana_signer::Signer;
 
 use crate::helpers::*;

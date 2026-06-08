@@ -12,6 +12,18 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
+        },
+        "./policies": {
+            "types": "./dist/policies/index.d.ts",
+            "import": "./dist/policies/index.js"
+        },
+        "./token": {
+            "types": "./dist/token.d.ts",
+            "import": "./dist/token.js"
+        },
+        "./units": {
+            "types": "./dist/units.d.ts",
+            "import": "./dist/units.js"
         }
     },
     "files": [

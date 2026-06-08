@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_pack::Pack as _;
 
-use crate::constants::{METADATA_SEED, MPL_TOKEN_METADATA_ID};
+use crate::constants::{MPL_TOKEN_METADATA_ID, SEED_METADATA};
 use crate::error::BastionError;
 use crate::utils::balance_delta::{spl_token_2022_id, spl_token_id};
 
@@ -40,7 +40,7 @@ pub fn read_verified_collection(mint: &Pubkey, metadata_ai: &AccountInfo) -> Opt
         return None;
     }
     let (expected, _) = Pubkey::find_program_address(
-        &[METADATA_SEED, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
+        &[SEED_METADATA, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
         &MPL_TOKEN_METADATA_ID,
     );
     if metadata_ai.key != &expected {
@@ -139,7 +139,7 @@ pub fn read_verified_creators(mint: &Pubkey, metadata_ai: &AccountInfo) -> Vec<P
         return Vec::new();
     }
     let (expected, _) = Pubkey::find_program_address(
-        &[METADATA_SEED, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
+        &[SEED_METADATA, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
         &MPL_TOKEN_METADATA_ID,
     );
     if metadata_ai.key != &expected {

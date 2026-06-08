@@ -74,10 +74,8 @@ export function parseOperatorCredential(json: string): OperatorCredential {
 
 export interface OperatorExecuteArgs extends OuterIxArgs {
     inner: Instruction;
-    /** Override the policy set (defaults to the credential's). */
     policies?: readonly Address[];
     expectedNonce?: bigint;
-    /** Holder-signed stateless manifest to enforce alongside on-chain policies. */
     manifest?: SignedManifest;
 }
 
@@ -100,7 +98,6 @@ export interface SequenceStep {
 
 export interface SequenceResult {
     completed: SequenceStep[];
-    /** Index of the leg that failed, or null if all succeeded. */
     failedAt: number | null;
     error?: unknown;
 }
@@ -110,17 +107,14 @@ export interface OperatorClient {
     readonly owner: Address;
     readonly sessionKey: Address;
 
-    /** Single atomic action (one wrapped leg). */
     execute(
         args: OperatorExecuteArgs,
         opts?: OperatorTxOpts
     ): Promise<Signature>;
-    /** Many legs, one atomic transaction (all-or-nothing). */
     executeBatch(
         args: OperatorBatchArgs,
         opts?: OperatorTxOpts
     ): Promise<Signature>;
-    /** Ordered, resumable multi-tx sequence (NOT atomic across txns). */
     executeSequence(
         inners: readonly Instruction[],
         opts?: OperatorTxOpts & OuterIxArgs

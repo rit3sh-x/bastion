@@ -24,7 +24,7 @@ pub fn charge_cooldown(
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{assert_anchor_error, pk};
+    use crate::utils::general::{assert_anchor_error, pk};
 
     use super::*;
 

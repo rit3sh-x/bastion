@@ -1,13 +1,12 @@
 import { address } from "@solana/kit";
 import {
-    associatedTokenAddress,
-    buildTokenTransferIx,
     BastionSdkError,
     createBastion,
     pda,
-    tokens,
     type SessionHandle,
 } from "bastion";
+import { associatedTokenAddress, buildTokenTransferIx } from "bastion/token";
+import { tokens } from "bastion/units";
 
 import { loadEnv } from "./env";
 import { DemoMachine } from "./machine";

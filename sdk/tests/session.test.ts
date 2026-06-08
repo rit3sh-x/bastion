@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Address } from "@solana/kit";
-import { pda, MPL_TOKEN_METADATA_ADDRESS } from "@/session";
+import { pda } from "@/session";
+import { MPL_TOKEN_METADATA_ID } from "@/generated";
 
 const OWNER = "So11111111111111111111111111111111111111112" as Address;
 const SESSION_KEY = "11111111111111111111111111111111" as Address;
@@ -35,7 +36,7 @@ describe("pda.metadata", () => {
         expect(addr).toBeDefined();
     });
     it("MPL_TOKEN_METADATA_ADDRESS is the canonical program id", () => {
-        expect(MPL_TOKEN_METADATA_ADDRESS).toBe(
+        expect(MPL_TOKEN_METADATA_ID).toBe(
             "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
         );
     });

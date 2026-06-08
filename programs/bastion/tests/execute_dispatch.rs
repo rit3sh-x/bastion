@@ -2,8 +2,8 @@ mod helpers;
 
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::solana_program::instruction::AccountMeta;
+use bastion::error::BastionError;
 use bastion::state::policy::PolicyData;
-use bastion::BastionError;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 

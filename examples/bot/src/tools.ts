@@ -5,16 +5,14 @@ import {
     type Instruction,
 } from "@solana/kit";
 import {
-    associatedTokenAddress,
-    buildTokenTransferIx,
     BastionSdkError,
     pda,
-    sol,
-    tokens,
     type BastionErrorCode,
     type OperatorClient,
     type SessionHandle,
 } from "bastion";
+import { associatedTokenAddress, buildTokenTransferIx } from "bastion/token";
+import { sol, tokens } from "bastion/units";
 import type Groq from "groq-sdk";
 import { z } from "zod";
 

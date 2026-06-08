@@ -25,7 +25,7 @@ pub fn check_max_ix_size(
 mod tests {
     use super::*;
 
-    use crate::utils::assert_anchor_error;
+    use crate::utils::general::assert_anchor_error;
 
     #[test]
     fn passes_under_bounds() {

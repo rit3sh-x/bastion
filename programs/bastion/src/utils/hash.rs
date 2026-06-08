@@ -9,11 +9,6 @@ pub const EMPTY_POLICIES_HASH: [u8; 32] = [0u8; 32];
 ///     a Session with all policies detached share the same sentinel.
 ///   - non-empty input → `sha256(concat(sort(keys).each().as_ref()))`
 ///
-/// Uses the SHA-256 syscall (baseline / always active) rather than blake3 — the
-/// `blake3` syscall is gated behind an inactive feature on mainnet-feature-set
-/// validators (incl. surfpool), so a program calling `sol_blake3` fails to load
-/// with `Unresolved symbol (sol_blake3)`.
-///
 /// Invariant: the value MUST match `session.policies_hash` on every `execute`.
 pub fn compute_policies_hash(keys: &[Pubkey]) -> [u8; 32] {
     if keys.is_empty() {
@@ -37,7 +32,7 @@ pub fn compute_chain_hash(prev: &[u8; 32], batch_bytes: &[u8], nonce: u64) -> [u
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::pk;
+    use crate::utils::general::pk;
 
     use super::*;
 

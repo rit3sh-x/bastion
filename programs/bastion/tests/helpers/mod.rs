@@ -6,7 +6,13 @@ use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::program_pack::Pack;
 use anchor_lang::system_program;
 use anchor_lang::{InstructionData, ToAccountMetas};
-use bastion::anchor_error_code;
+use bastion::{
+    constants::{
+        COMPUTE_BUDGET_ID, MPL_TOKEN_METADATA_ID, SEED_DELEGATE, SEED_METADATA, SEED_POLICY,
+        SEED_SESSION,
+    },
+    utils::general::anchor_error_code,
+};
 use litesvm::types::FailedTransactionMetadata;
 use litesvm::LiteSVM;
 use solana_keypair::Keypair;
@@ -89,21 +95,21 @@ pub fn airdrop(svm: &mut LiteSVM, to: &Pubkey, lamports: u64) {
 
 pub fn derive_session_pda(owner: &Pubkey, session_key: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[bastion::SEED_SESSION, owner.as_ref(), session_key.as_ref()],
+        &[SEED_SESSION, owner.as_ref(), session_key.as_ref()],
         &bastion::id(),
     )
 }
 
 pub fn derive_policy_pda(session: &Pubkey, seed: u64) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[bastion::SEED_POLICY, session.as_ref(), &seed.to_le_bytes()],
+        &[SEED_POLICY, session.as_ref(), &seed.to_le_bytes()],
         &bastion::id(),
     )
 }
 
 pub fn derive_delegate_pda(owner: &Pubkey, session_key: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
-        &[bastion::SEED_DELEGATE, owner.as_ref(), session_key.as_ref()],
+        &[SEED_DELEGATE, owner.as_ref(), session_key.as_ref()],
         &bastion::id(),
     )
 }
@@ -628,12 +634,8 @@ pub fn make_nft_mint(svm: &mut LiteSVM, mint_pk: &Pubkey) {
 
 pub fn derive_metadata_pda(mint: &Pubkey) -> Pubkey {
     let (pda, _) = Pubkey::find_program_address(
-        &[
-            bastion::METADATA_SEED,
-            bastion::MPL_TOKEN_METADATA_ID.as_ref(),
-            mint.as_ref(),
-        ],
-        &bastion::MPL_TOKEN_METADATA_ID,
+        &[SEED_METADATA, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
+        &MPL_TOKEN_METADATA_ID,
     );
     pda
 }
@@ -671,7 +673,7 @@ pub fn make_verified_collection_metadata(
     let acct = solana_account::Account {
         lamports: TOKEN_ACCT_RENT,
         data,
-        owner: bastion::MPL_TOKEN_METADATA_ID,
+        owner: MPL_TOKEN_METADATA_ID,
         executable: false,
         rent_epoch: 0,
     };
@@ -720,7 +722,7 @@ pub fn make_creator_metadata(
     let acct = solana_account::Account {
         lamports: TOKEN_ACCT_RENT,
         data,
-        owner: bastion::MPL_TOKEN_METADATA_ID,
+        owner: MPL_TOKEN_METADATA_ID,
         executable: false,
         rent_epoch: 0,
     };
@@ -732,7 +734,7 @@ pub fn set_cu_limit_ix(limit: u32) -> Instruction {
     let mut data = vec![2u8];
     data.extend_from_slice(&limit.to_le_bytes());
     Instruction {
-        program_id: bastion::COMPUTE_BUDGET_ID,
+        program_id: COMPUTE_BUDGET_ID,
         accounts: vec![],
         data,
     }
@@ -742,7 +744,7 @@ pub fn set_cu_price_ix(price: u64) -> Instruction {
     let mut data = vec![3u8];
     data.extend_from_slice(&price.to_le_bytes());
     Instruction {
-        program_id: bastion::COMPUTE_BUDGET_ID,
+        program_id: COMPUTE_BUDGET_ID,
         accounts: vec![],
         data,
     }

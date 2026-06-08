@@ -9,16 +9,9 @@ import {
     type Address,
     type Instruction,
 } from "@solana/kit";
-import {
-    asset,
-    createHolderClient,
-    createOperatorClient,
-    EMPTY_SPEND_STATE,
-    pda,
-    policyData,
-    sol,
-    windowKind,
-} from "bastion";
+import { createHolderClient, createOperatorClient, pda } from "bastion";
+import { asset, ProgramAllowlist, SpendCap, window } from "bastion/policies";
+import { days, sol } from "bastion/units";
 
 const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8899";
 const WS_URL = process.env.WS_URL ?? "ws://127.0.0.1:8900";
@@ -97,12 +90,11 @@ async function main() {
         const r = await holder.openSession({
             expiry: { secsFromNow: 3600 },
             policies: [
-                policyData("ProgramAllowlist", { programs: [SYSTEM] }),
-                policyData("SpendCap", {
-                    asset: asset("NativeSol"),
-                    window: windowKind("Fixed", { secs: 86400 }),
+                ProgramAllowlist({ programs: [SYSTEM] }),
+                SpendCap({
+                    asset: asset.sol(),
+                    window: window.fixed(days(1)),
                     max: sol(10),
-                    state: EMPTY_SPEND_STATE,
                 }),
             ],
             useLookupTable: true,
@@ -160,7 +152,7 @@ async function main() {
 
     try {
         const signed = await holder.signManifest([
-            policyData("ProgramAllowlist", { programs: [SYSTEM] }),
+            ProgramAllowlist({ programs: [SYSTEM] }),
         ]);
         await handle.pinManifest(signed.manifestHash);
         await sleep(800);

@@ -6,7 +6,7 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 
 use crate::helpers::*;
-use bastion::BastionError;
+use bastion::error::BastionError;
 
 fn delegate_only_extras(owner: &Pubkey, session_key: &Pubkey) -> Vec<AccountMeta> {
     let (delegate_pda, _) = derive_delegate_pda(owner, session_key);

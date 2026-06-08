@@ -1,12 +1,13 @@
 mod helpers;
 
+use bastion::constants::COMPUTE_BUDGET_ID;
 use bastion::error::BastionError;
 use bastion::state::policy::PolicyData;
 
 use crate::helpers::*;
 
 fn memo_program() -> anchor_lang::prelude::Pubkey {
-    bastion::COMPUTE_BUDGET_ID
+    COMPUTE_BUDGET_ID
 }
 
 #[test]

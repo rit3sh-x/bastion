@@ -2,9 +2,9 @@ mod helpers;
 
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use bastion::error::BastionError;
 use bastion::state::policy::PolicyData;
 use bastion::state::wrapped_ix::{CompactAccountMeta, WrappedInstruction};
-use bastion::BastionError;
 use litesvm::types::FailedTransactionMetadata;
 use litesvm::LiteSVM;
 use solana_keypair::Keypair;

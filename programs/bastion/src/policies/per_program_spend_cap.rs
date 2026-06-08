@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::error::BastionError;
 use crate::state::counter::SpendState;
 use crate::state::policy::WindowKind;
-use crate::utils::anchor_error_code;
+use crate::utils::general::anchor_error_code;
 
 /// post-CPI charge for `PerProgramSpendCap`. Pre-CPI snapshot logic in
 /// `execute.rs` only emits a snapshot when `wrapped_ix.program_id` matches the
@@ -46,4 +46,146 @@ pub fn charge_per_program_spend_cap(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::counter::SpendState;
+    use crate::state::policy::WindowKind;
+
+    #[test]
+    fn no_charge_when_post_greater_than_pre() {
+        let mut state = SpendState::default();
+
+        assert!(charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Fixed { secs: 60 },
+            100,
+            50,
+            100,
+            1_000,
+        )
+        .is_ok());
+
+        assert_eq!(state.spent, 0);
+    }
+
+    #[test]
+    fn no_charge_when_post_equals_pre() {
+        let mut state = SpendState::default();
+
+        assert!(charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Fixed { secs: 60 },
+            100,
+            50,
+            50,
+            1_000,
+        )
+        .is_ok());
+
+        assert_eq!(state.spent, 0);
+    }
+
+    #[test]
+    fn fixed_window_charges_delta() {
+        let mut state = SpendState::default();
+
+        charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Fixed { secs: 60 },
+            100,
+            100,
+            60,
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(state.spent, 40);
+    }
+
+    #[test]
+    fn fixed_window_allows_exact_cap() {
+        let mut state = SpendState::default();
+
+        charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Fixed { secs: 60 },
+            100,
+            100,
+            0,
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(state.spent, 100);
+    }
+
+    #[test]
+    fn fixed_window_remaps_spend_cap_error() {
+        let mut state = SpendState::default();
+
+        let err = charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Fixed { secs: 60 },
+            50,
+            100,
+            0,
+            1_000,
+        )
+        .unwrap_err();
+
+        match err {
+            anchor_lang::error::Error::AnchorError(ae) => {
+                assert_eq!(
+                    ae.error_code_number,
+                    anchor_error_code(BastionError::ProgramSpendCapExceeded)
+                );
+            }
+            _ => panic!("unexpected error type"),
+        }
+    }
+
+    #[test]
+    fn rolling_window_charges_delta() {
+        let mut state = SpendState::default();
+
+        charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Rolling { secs: 60, slots: 6 },
+            100,
+            100,
+            75,
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(state.spent, 25);
+    }
+
+    #[test]
+    fn rolling_window_remaps_spend_cap_error() {
+        let mut state = SpendState::default();
+
+        let err = charge_per_program_spend_cap(
+            &mut state,
+            &WindowKind::Rolling { secs: 60, slots: 6 },
+            50,
+            100,
+            0,
+            1_000,
+        )
+        .unwrap_err();
+
+        match err {
+            anchor_lang::error::Error::AnchorError(ae) => {
+                assert_eq!(
+                    ae.error_code_number,
+                    anchor_error_code(BastionError::ProgramSpendCapExceeded)
+                );
+            }
+            _ => panic!("unexpected error type"),
+        }
+    }
 }
