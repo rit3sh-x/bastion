@@ -98,6 +98,15 @@ impl<'info> Execute<'info> {
         // every leg (each leg's CompactAccountMeta indexes the same pool).
         let mut exec = self.collect_execution_context(remaining_accounts, policy_count)?;
 
+        // A pinned manifest is BINDING: once the owner commits a manifest hash,
+        // the holder cannot opt out of those policies by simply omitting the
+        // argument. Require it whenever one is pinned. (The reverse — supplying
+        // a manifest with none pinned — is rejected inside verify_manifest as
+        // ManifestNotPinned.)
+        if self.session.manifest_hash != [0u8; 32] {
+            require!(manifest.is_some(), BastionError::ManifestRequired);
+        }
+
         // A holder-signed stateless manifest extends the policy set
         // off-chain. Verify once: pinned hash + ed25519 binding (owner over the
         // commitment) + every entry stateless.
