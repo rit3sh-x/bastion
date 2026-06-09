@@ -166,4 +166,7 @@ pub enum BastionError {
 
     #[msg("Token authority-change instruction (approve/approveChecked/setAuthority) not allowed by policy")]
     TokenAuthorityChangeNotAllowed,
+
+    #[msg("session has a pinned manifest but execute supplied none")]
+    ManifestRequired,
 }

@@ -94,6 +94,31 @@ fn execute_manifest_ix(
     }
 }
 
+fn execute_no_manifest_ix(
+    session_key: &anchor_lang::prelude::Pubkey,
+    session_pda: &anchor_lang::prelude::Pubkey,
+    extra: &[AccountMeta],
+) -> Instruction {
+    let mut metas = bastion::accounts::Execute {
+        session_key: *session_key,
+        session: *session_pda,
+        instructions_sysvar: solana_instructions_sysvar::ID,
+    }
+    .to_account_metas(None);
+    metas.extend_from_slice(extra);
+    Instruction {
+        program_id: bastion::id(),
+        accounts: metas,
+        data: bastion::instruction::Execute {
+            wrapped_ixs: vec![transfer_wrapped_ix(1_000)],
+            policy_count: 0,
+            expected_nonce: None,
+            manifest: None,
+        }
+        .data(),
+    }
+}
+
 fn send_tx(
     svm: &mut LiteSVM,
     ixs: &[Instruction],
@@ -195,6 +220,34 @@ fn manifest_not_pinned_rejected() {
         &[&session_kp],
     );
     assert_svm_anchor_error(res, BastionError::ManifestNotPinned);
+}
+
+#[test]
+fn pinned_manifest_omitted_rejected() {
+    // The holder cannot bypass a pinned manifest by sending `manifest: None`.
+    // Owner pins a hash; execute that omits the manifest must fail rather than
+    // silently skipping those policies.
+    let (mut svm, owner) = setup_svm();
+    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+
+    let manifest = manifest_allow(anchor_lang::system_program::ID);
+    let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
+
+    send_tx(
+        &mut svm,
+        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
+        &[&owner],
+    )
+    .expect("pin manifest");
+
+    svm.expire_blockhash();
+    let extras = zero_policy_extras(&delegate, &dest);
+    let res = send_tx(
+        &mut svm,
+        &[execute_no_manifest_ix(&session_kp.pubkey(), &session_pda, &extras)],
+        &[&session_kp],
+    );
+    assert_svm_anchor_error(res, BastionError::ManifestRequired);
 }
 
 #[test]
