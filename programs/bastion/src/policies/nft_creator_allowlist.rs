@@ -15,8 +15,11 @@ use crate::utils::nft::{is_nft_mint, parse_verified_creators};
 pub fn check_nft_creator_allowlist(creators: &[Pubkey], ix_accounts: &[AccountInfo]) -> Result<()> {
     let mut seen: Vec<Pubkey> = Vec::new();
     for ai in ix_accounts {
+        // `>=` (not `==`) Mint::LEN: a Token-2022 mint with an extension exceeds
+        // the 82-byte base, so an exact-length filter fails open. is_nft_mint
+        // validates the base mint; token accounts (len 165) fail it.
         if (ai.owner == &spl_token_id() || ai.owner == &spl_token_2022_id())
-            && ai.data_len() == spl_token_interface::state::Mint::LEN
+            && ai.data_len() >= spl_token_interface::state::Mint::LEN
             && is_nft_mint(ai).unwrap_or(false)
             && !seen.contains(ai.key)
         {

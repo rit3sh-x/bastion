@@ -22,8 +22,14 @@ where
 {
     let mut seen: Vec<Pubkey> = Vec::new();
     for ai in ix_accounts {
+        // `>=` (not `==`) Mint::LEN: a Token-2022 mint carrying any extension is
+        // longer than the 82-byte base, so an exact-length filter would skip it
+        // and the allowlist would run on an empty set (fail-open). is_nft_mint
+        // validates the base mint layout; a token *account* (len 165) misreads
+        // its first 82 bytes as a mint with a non-1 supply, so is_nft_mint
+        // rejects it.
         if (ai.owner == &spl_token_id() || ai.owner == &spl_token_2022_id())
-            && ai.data_len() == spl_token_interface::state::Mint::LEN
+            && ai.data_len() >= spl_token_interface::state::Mint::LEN
             && is_nft_mint(ai).unwrap_or(false)
             && !seen.contains(ai.key)
         {
@@ -405,5 +411,28 @@ mod tests {
         let collection = Pubkey::new_unique();
         let collections = vec![collection];
         assert!(check_nft_collection_blocklist(&collections, &[]).is_ok());
+    }
+
+    #[test]
+    fn allowlist_discovers_t22_mint_with_extension_and_fails_closed() {
+        // A Token-2022 NFT mint carrying an extension is longer than the
+        // 82-byte base. The exact-length (`== Mint::LEN`) discovery filter used
+        // to skip it, so the allowlist ran on an empty set and PASSED (fail-open).
+        // With `>= Mint::LEN`, the mint is discovered; with no metadata account
+        // passing a verified collection, the allowlist now REJECTS it (fail-closed).
+        let mint_key = Pubkey::new_unique();
+        let collection = Pubkey::new_unique();
+        let collections = vec![collection];
+
+        let t22 = spl_token_2022_id();
+        let mut lam = 0u64;
+        // 82-byte valid NFT mint base + trailing bytes standing in for a TLV
+        // extension (data_len = 165 > Mint::LEN).
+        let mut data = pack_nft_mint().to_vec();
+        data.resize(165, 0);
+        let mint_ai = make_account_info(&mint_key, &t22, &mut lam, &mut data);
+
+        // No metadata account → no verified collection → allowlist rejects.
+        assert!(check_nft_collection_allowlist(&collections, &[mint_ai]).is_err());
     }
 }

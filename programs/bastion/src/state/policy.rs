@@ -67,6 +67,47 @@ pub enum WindowKind {
     Rolling { secs: u32, slots: u8 },
 }
 
+/// A counter/spend window is well-formed only with a non-zero duration (and, for
+/// Rolling, a slot count in `1..=MAX_RING_SLOTS`). A zero-second window expires
+/// on every call, so the charge logic resets each time and the cap enforces
+/// nothing — reject it at attach/update.
+fn window_valid(w: &WindowKind) -> bool {
+    match w {
+        WindowKind::Fixed { secs } => *secs >= 1,
+        WindowKind::Rolling { secs, slots } => {
+            *secs >= 1 && *slots >= 1 && usize::from(*slots) <= crate::constants::MAX_RING_SLOTS
+        }
+    }
+}
+
+/// On an `update_policy` window reshape, re-express the carried counter so the
+/// new enforcer reads the consumed budget: Fixed keeps it in `count`,
+/// Rolling in `sum(ring)`. Same-shape edits are a no-op (raw carry is correct).
+fn rewindow_counter(
+    s: &mut crate::state::counter::CounterState,
+    old: &WindowKind,
+    new: &WindowKind,
+) {
+    match (old, new) {
+        (WindowKind::Fixed { .. }, WindowKind::Rolling { slots, .. }) => {
+            s.seed_ring_from_count(*slots)
+        }
+        (WindowKind::Rolling { .. }, WindowKind::Fixed { .. }) => s.collapse_ring_to_count(),
+        _ => {}
+    }
+}
+
+/// `rewindow_counter` for the SpendCap/PerProgramSpendCap `SpendState`.
+fn rewindow_spend(s: &mut crate::state::counter::SpendState, old: &WindowKind, new: &WindowKind) {
+    match (old, new) {
+        (WindowKind::Fixed { .. }, WindowKind::Rolling { slots, .. }) => {
+            s.seed_ring_from_spent(*slots)
+        }
+        (WindowKind::Rolling { .. }, WindowKind::Fixed { .. }) => s.collapse_ring_to_spent(),
+        _ => {}
+    }
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Asset {
     NativeSol,
@@ -387,8 +428,18 @@ impl PolicyData {
                 require!(*sent == 0, BastionError::InvalidPolicyData);
                 require!(*max > 0, BastionError::InvalidPolicyData);
             }
-            PolicyData::PerProgramSpendCap { max, .. } => {
+            PolicyData::PerProgramSpendCap { max, window, .. } => {
                 require!(*max > 0, BastionError::InvalidPolicyData);
+                require!(window_valid(window), BastionError::InvalidWindow);
+            }
+            PolicyData::RateLimit { window, .. } => {
+                require!(window_valid(window), BastionError::InvalidWindow);
+            }
+            PolicyData::SpendCap { window, .. } => {
+                require!(window_valid(window), BastionError::InvalidWindow);
+            }
+            PolicyData::CooldownPeriod { secs, .. } => {
+                require!(*secs >= 1, BastionError::InvalidWindow);
             }
             PolicyData::TimeOfDayWindow {
                 start_minute,
@@ -413,23 +464,50 @@ impl PolicyData {
     pub fn carry_state_from(&mut self, old: &PolicyData) {
         match (self, old) {
             (
-                PolicyData::RateLimit { state, .. },
                 PolicyData::RateLimit {
-                    state: old_state, ..
+                    state,
+                    window: new_window,
+                    ..
                 },
-            ) => *state = *old_state,
+                PolicyData::RateLimit {
+                    state: old_state,
+                    window: old_window,
+                    ..
+                },
+            ) => {
+                *state = *old_state;
+                rewindow_counter(state, old_window, new_window);
+            }
             (
-                PolicyData::SpendCap { state, .. },
                 PolicyData::SpendCap {
-                    state: old_state, ..
+                    state,
+                    window: new_window,
+                    ..
                 },
-            ) => *state = *old_state,
+                PolicyData::SpendCap {
+                    state: old_state,
+                    window: old_window,
+                    ..
+                },
+            ) => {
+                *state = *old_state;
+                rewindow_spend(state, old_window, new_window);
+            }
             (
-                PolicyData::PerProgramSpendCap { state, .. },
                 PolicyData::PerProgramSpendCap {
-                    state: old_state, ..
+                    state,
+                    window: new_window,
+                    ..
                 },
-            ) => *state = *old_state,
+                PolicyData::PerProgramSpendCap {
+                    state: old_state,
+                    window: old_window,
+                    ..
+                },
+            ) => {
+                *state = *old_state;
+                rewindow_spend(state, old_window, new_window);
+            }
             (
                 PolicyData::CooldownPeriod { last_call_ts, .. },
                 PolicyData::CooldownPeriod {
@@ -771,5 +849,148 @@ mod tests {
         let p = <Policy as anchor_lang::AccountDeserialize>::try_deserialize_unchecked(&mut slice)
             .expect("zero account must decode (Anchor init invariant)");
         assert!(matches!(p.data, PolicyData::Uninitialized));
+    }
+
+    fn rate_limit_w(window: WindowKind, state: CounterState) -> PolicyData {
+        PolicyData::RateLimit {
+            window,
+            max: 3,
+            state,
+            scope: None,
+        }
+    }
+    fn spend_cap_w(window: WindowKind, state: SpendState) -> PolicyData {
+        PolicyData::SpendCap {
+            asset: Asset::NativeSol,
+            window,
+            max: 1_000_000,
+            state,
+        }
+    }
+
+    #[test]
+    fn attach_rejects_zero_second_fixed_window() {
+        assert!(
+            rate_limit_w(WindowKind::Fixed { secs: 0 }, CounterState::default())
+                .validate_attach_params()
+                .is_err()
+        );
+        assert!(
+            spend_cap_w(WindowKind::Fixed { secs: 0 }, SpendState::default())
+                .validate_attach_params()
+                .is_err()
+        );
+        assert!(PolicyData::CooldownPeriod {
+            secs: 0,
+            last_call_ts: 0,
+            scope: None,
+        }
+        .validate_attach_params()
+        .is_err());
+    }
+
+    #[test]
+    fn attach_rejects_zero_slot_or_zero_sec_rolling_window() {
+        assert!(rate_limit_w(
+            WindowKind::Rolling { secs: 60, slots: 0 },
+            CounterState::default()
+        )
+        .validate_attach_params()
+        .is_err());
+        assert!(rate_limit_w(
+            WindowKind::Rolling { secs: 0, slots: 6 },
+            CounterState::default()
+        )
+        .validate_attach_params()
+        .is_err());
+        assert!(rate_limit_w(
+            WindowKind::Rolling {
+                secs: 60,
+                slots: 200
+            },
+            CounterState::default()
+        )
+        .validate_attach_params()
+        .is_err());
+    }
+
+    #[test]
+    fn attach_accepts_well_formed_windows() {
+        assert!(
+            rate_limit_w(WindowKind::Fixed { secs: 60 }, CounterState::default())
+                .validate_attach_params()
+                .is_ok()
+        );
+        assert!(rate_limit_w(
+            WindowKind::Rolling { secs: 60, slots: 6 },
+            CounterState::default()
+        )
+        .validate_attach_params()
+        .is_ok());
+        assert!(
+            spend_cap_w(WindowKind::Fixed { secs: 86_400 }, SpendState::default())
+                .validate_attach_params()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn reshape_fixed_to_rolling_keeps_exhausted_rate_limit_exhausted() {
+        // Old policy: Fixed window, exhausted at max 3 (count = 3, ring empty).
+        let mut old_state = CounterState::default();
+        old_state.charge_fixed(1_000, 3, 60).unwrap();
+        old_state.charge_fixed(1_001, 3, 60).unwrap();
+        old_state.charge_fixed(1_002, 3, 60).unwrap();
+        assert_eq!(old_state.count, 3);
+        assert_eq!(old_state.ring.iter().sum::<u32>(), 0);
+
+        let old = rate_limit_w(WindowKind::Fixed { secs: 60 }, old_state);
+        let mut new = rate_limit_w(
+            WindowKind::Rolling { secs: 60, slots: 6 },
+            CounterState::default(),
+        );
+        new.carry_state_from(&old);
+
+        // Carried state must present the consumed budget in the rolling
+        // representation: sum(ring) == 3, so the next rolling charge trips the cap.
+        if let PolicyData::RateLimit { state, .. } = new {
+            assert_eq!(state.ring.iter().sum::<u32>(), 3);
+        } else {
+            panic!("expected RateLimit");
+        }
+    }
+
+    #[test]
+    fn reshape_fixed_to_rolling_keeps_spend_cap_consumed() {
+        let mut old_state = SpendState::default();
+        old_state
+            .charge_fixed(1_000, 900_000, 1_000_000, 60)
+            .unwrap();
+        let old = spend_cap_w(WindowKind::Fixed { secs: 60 }, old_state);
+        let mut new = spend_cap_w(
+            WindowKind::Rolling { secs: 60, slots: 6 },
+            SpendState::default(),
+        );
+        new.carry_state_from(&old);
+        if let PolicyData::SpendCap { state, .. } = new {
+            assert_eq!(state.ring.iter().sum::<u64>(), 900_000);
+        } else {
+            panic!("expected SpendCap");
+        }
+    }
+
+    #[test]
+    fn reshape_same_kind_carries_state_verbatim() {
+        let mut old_state = CounterState::default();
+        old_state.charge_fixed(1_000, 5, 60).unwrap();
+        old_state.charge_fixed(1_001, 5, 60).unwrap();
+        let old = rate_limit_w(WindowKind::Fixed { secs: 60 }, old_state);
+        let mut new = rate_limit_w(WindowKind::Fixed { secs: 120 }, CounterState::default());
+        new.carry_state_from(&old);
+        if let PolicyData::RateLimit { state, .. } = new {
+            assert_eq!(state.count, 2); // same-kind edit resumes count verbatim
+        } else {
+            panic!("expected RateLimit");
+        }
     }
 }
