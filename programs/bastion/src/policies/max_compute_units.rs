@@ -49,7 +49,6 @@ mod tests {
         construct_instructions_data(&borrowed)
     }
 
-
     fn set_cu_limit_ix(units: u32) -> Instruction {
         let mut data = vec![2u8];
         data.extend_from_slice(&units.to_le_bytes());

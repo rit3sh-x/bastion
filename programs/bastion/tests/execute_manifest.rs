@@ -244,7 +244,11 @@ fn pinned_manifest_omitted_rejected() {
     let extras = zero_policy_extras(&delegate, &dest);
     let res = send_tx(
         &mut svm,
-        &[execute_no_manifest_ix(&session_kp.pubkey(), &session_pda, &extras)],
+        &[execute_no_manifest_ix(
+            &session_kp.pubkey(),
+            &session_pda,
+            &extras,
+        )],
         &[&session_kp],
     );
     assert_svm_anchor_error(res, BastionError::ManifestRequired);

@@ -58,15 +58,14 @@ pub fn check_mint_blocklist(mints: &[Pubkey], ix_accounts: &[AccountInfo]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::general::make_account_info;
     use crate::utils::balance_delta::{spl_token_2022_id, spl_token_id, SPL_TOKEN_ACCOUNT_LEN};
+    use crate::utils::general::make_account_info;
 
     fn token_account_data(mint: &Pubkey) -> Vec<u8> {
         let mut data = vec![0u8; SPL_TOKEN_ACCOUNT_LEN];
         data[..32].copy_from_slice(mint.as_ref());
         data
     }
-
 
     #[test]
     fn skips_non_token_account() {

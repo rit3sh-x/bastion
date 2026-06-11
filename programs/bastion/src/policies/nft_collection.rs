@@ -92,8 +92,8 @@ pub fn check_nft_collection_blocklist(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::general::make_account_info;
     use crate::constants::MPL_TOKEN_METADATA_ID;
+    use crate::utils::general::make_account_info;
     use anchor_lang::solana_program::program_option::COption;
     use spl_token_interface::state::Mint as SplMint;
 
@@ -150,7 +150,6 @@ mod tests {
         }
         v
     }
-
 
     fn metadata_pda(mint: &Pubkey) -> (Pubkey, u8) {
         Pubkey::find_program_address(

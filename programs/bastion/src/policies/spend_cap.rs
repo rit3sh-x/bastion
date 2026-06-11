@@ -101,11 +101,10 @@ fn charge_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::general::make_account_info;
     use crate::state::counter::SpendState;
     use crate::state::policy::{Asset, WindowKind};
     use crate::utils::general::assert_anchor_error;
-
+    use crate::utils::general::make_account_info;
 
     #[test]
     fn nft_variants_snapshot_zero() {

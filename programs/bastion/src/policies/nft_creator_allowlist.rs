@@ -52,8 +52,8 @@ pub fn check_nft_creator_allowlist(creators: &[Pubkey], ix_accounts: &[AccountIn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::general::make_account_info;
     use crate::constants::MPL_TOKEN_METADATA_ID;
+    use crate::utils::general::make_account_info;
     use anchor_lang::solana_program::program_option::COption;
     use spl_token_interface::state::Mint as SplMint;
 
@@ -127,7 +127,6 @@ mod tests {
         )
         .0
     }
-
 
     #[test]
     fn accepts_nft_with_verified_creator_in_allowlist() {
