@@ -11,6 +11,11 @@ pub struct InitSessionArgs {
     pub expiry: i64,
 }
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 #[instruction(args: InitSessionArgs)]
 pub struct InitSession<'info> {

@@ -1,806 +1,258 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
-use anchor_lang::solana_program::program_option::COption;
-use anchor_lang::solana_program::program_pack::Pack;
-use anchor_lang::system_program;
-use anchor_lang::{InstructionData, ToAccountMetas};
-use bastion::{
-    constants::{
-        COMPUTE_BUDGET_ID, MPL_TOKEN_METADATA_ID, SEED_DELEGATE, SEED_METADATA, SEED_POLICY,
-        SEED_SESSION,
-    },
-    utils::general::anchor_error_code,
-};
-use litesvm::types::FailedTransactionMetadata;
-use litesvm::LiteSVM;
+//! The shared test façade. One import — `mod helpers; use helpers::*;` — gives a
+//! scenario everything it needs:
+//!
+//!   * **Plumbing**: `bastion_ctx()` loads the program and pins the clock.
+//!   * **Cast**: `cast_session` / `cast_policy` name a session, delegate, and
+//!     policy as they derive them, so reports read `SpendCap`, never `policy0`.
+//!   * **Scenarios**: `bootstrap` / `open_session` open + fund a session in one
+//!     line; `attach` / `attach_all` attach policies (handling the attach-chain
+//!     of prior policy accounts) and return their PDAs.
+//!   * **Builders**: the wrapped-ix, dispatch-tail, and outer-ix builders are
+//!     re-exported from `bastion::utils::helpers` (they encode the program's wire
+//!     format, so they live beside the program; see that module).
+//!
+//! The split is dictated by what compiles where: the builders are pure functions
+//! of bastion's layout and need only the crate's regular deps, so they sit in
+//! `src`. Anything that drives the SVM — `Keypair` signing, airdrops, the
+//! `AnchorContext` — can only use dev-deps, so it lives here.
+
+use anchor_litesvm::{AnchorContext, AnchorLiteSVM, TestHelpers};
+use bastion::state::policy::PolicyData;
+use bastion::state::session::Session;
+use bastion::utils::helpers::{derive_policy, BastionBundle, SessionRoot};
 use solana_keypair::Keypair;
-use solana_message::{Message, VersionedMessage};
 use solana_signer::Signer;
-use solana_transaction::versioned::VersionedTransaction;
 
-pub const TEST_CLOCK_TS: i64 = 1_704_067_200;
+use anchor_lang::prelude::Pubkey;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 
+// Re-export the program-aware builders so a scenario reaches them through this
+// one façade (`helpers::transfer_wrapped`, `helpers::transfer_tail`, …) rather
+// than a second `use bastion::utils::helpers::...`.
+pub use bastion::utils::helpers::{
+    derive_delegate, derive_session, dispatch_tail, pin_manifest_ix, policy_meta,
+    set_compute_unit_limit_ix, set_compute_unit_price_ix, transfer_ix_accounts, transfer_tail,
+    transfer_wrapped,
+};
+
+pub const BASTION_SO: &[u8] = include_bytes!("../../../../target/deploy/bastion.so");
 pub const ONE_SOL: u64 = 1_000_000_000;
+pub const TEST_CLOCK_TS: i64 = 1_704_067_200;
+/// One day in seconds — the default session lifetime (`open_session` sets expiry
+/// to `TEST_CLOCK_TS + DAY`).
+pub const DAY: i64 = 86_400;
 
-const BASTION_BINARY: &[u8] = include_bytes!("../../../../target/deploy/bastion.so");
+// ---------------------------------------------------------------------------
+// Plumbing.
+// ---------------------------------------------------------------------------
 
-pub fn assert_svm_anchor_error<T, E>(
-    result: std::result::Result<T, litesvm::types::FailedTransactionMetadata>,
-    expected: E,
-) where
-    T: std::fmt::Debug,
-    E: Into<u32> + Copy + std::fmt::Debug,
-{
-    let expected_code = anchor_error_code(expected);
-
-    let err = result.unwrap_err();
-
-    let logs = err.meta.logs.join("\n");
-
-    assert!(
-        logs.contains(&format!("0x{:x}", expected_code))
-            || logs.contains(&format!("{:?}", expected)),
-        "Expected Anchor error {:?} (0x{:x}), got:\n{}",
-        expected,
-        expected_code,
-        logs,
-    );
+/// Load bastion and pin the clock to a fixed anchor point. Time-advancing tests
+/// move from here with `TestHelpers::advance_seconds` / `advance_days`.
+pub fn bastion_ctx() -> AnchorContext {
+    let mut ctx = AnchorLiteSVM::build_with_program(bastion::ID, "bastion", BASTION_SO);
+    ctx.svm.warp_to_timestamp(TEST_CLOCK_TS);
+    ctx
 }
 
-pub fn setup_svm() -> (LiteSVM, Keypair) {
-    let mut svm = LiteSVM::new();
-    let program_id = bastion::id();
-    svm.add_program(program_id, BASTION_BINARY)
-        .expect("load bastion.so into LiteSVM");
+// ---------------------------------------------------------------------------
+// Cast — name the structural accounts (session, delegate, policy) as they derive.
+// ---------------------------------------------------------------------------
 
-    let payer = Keypair::new();
-    let amount = 100_u64
-        .checked_mul(ONE_SOL)
-        .expect("airdrop amount overflow");
-
-    svm.airdrop(&payer.pubkey(), amount)
-        .expect("airdrop to payer must succeed");
-
-    let mut clock: Clock = svm.get_sysvar();
-    clock.unix_timestamp = TEST_CLOCK_TS;
-    svm.set_sysvar(&clock);
-
-    (svm, payer)
+/// A session and its delegate, derived from `(owner, session_key)` and aliased.
+/// Carries the `bundle` every instruction projects its accounts from.
+pub struct SessionCast {
+    pub bundle: BastionBundle,
+    pub session: Pubkey,
+    pub delegate: Pubkey,
 }
 
-pub fn now(svm: &LiteSVM) -> i64 {
-    let clock: Clock = svm.get_sysvar();
-    clock.unix_timestamp
-}
-
-pub fn advance_clock(svm: &mut LiteSVM, secs: i64) {
-    let mut clock: Clock = svm.get_sysvar();
-    clock.unix_timestamp = clock.unix_timestamp.saturating_add(secs);
-    svm.set_sysvar(&clock);
-}
-
-pub fn set_clock(svm: &mut LiteSVM, offset_secs: i64) {
-    let mut clock: Clock = svm.get_sysvar();
-    clock.unix_timestamp = TEST_CLOCK_TS
-        .checked_add(offset_secs)
-        .expect("clock offset overflow");
-    svm.set_sysvar(&clock);
-}
-
-pub fn airdrop(svm: &mut LiteSVM, to: &Pubkey, lamports: u64) {
-    svm.airdrop(to, lamports).expect("airdrop must succeed");
-}
-
-pub fn derive_session_pda(owner: &Pubkey, session_key: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[SEED_SESSION, owner.as_ref(), session_key.as_ref()],
-        &bastion::id(),
-    )
-}
-
-pub fn derive_policy_pda(session: &Pubkey, seed: u64) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[SEED_POLICY, session.as_ref(), &seed.to_le_bytes()],
-        &bastion::id(),
-    )
-}
-
-pub fn derive_delegate_pda(owner: &Pubkey, session_key: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[SEED_DELEGATE, owner.as_ref(), session_key.as_ref()],
-        &bastion::id(),
-    )
-}
-
-pub fn send_ix(
-    svm: &mut LiteSVM,
-    ix: Instruction,
-    signers: &[&Keypair],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    let bh = svm.latest_blockhash();
-    let payer_pk = signers[0].pubkey();
-    let msg = Message::new_with_blockhash(&[ix], Some(&payer_pk), &bh);
-    let tx =
-        VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).expect("tx signing");
-    svm.send_transaction(tx).map(|_| ())
-}
-
-pub fn init_session_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    session_key: Pubkey,
-    expiry: i64,
-) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::InitSession {
-            owner: *owner,
-            session: *session_pda,
-            system_program: system_program::ID,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::InitSession {
-            args: bastion::InitSessionArgs {
-                session_key,
-                expiry,
-            },
-        }
-        .data(),
+/// Derive + alias the session and delegate PDAs (no on-chain state yet). Use this
+/// when a test drives `InitSession` itself; most scenarios want `open_session`.
+pub fn cast_session(ctx: &mut AnchorContext, owner: &Keypair, session_kp: &Keypair) -> SessionCast {
+    let bundle = BastionBundle::from(&SessionRoot {
+        owner: owner.pubkey(),
+        session_key: session_kp.pubkey(),
+    });
+    ctx.alias(bundle.session, "Session");
+    ctx.alias(bundle.delegate, "Delegate");
+    SessionCast {
+        bundle,
+        session: bundle.session,
+        delegate: bundle.delegate,
     }
 }
 
+/// Alias the policy at `seed`, named by its role in this scenario, and return its
+/// PDA. Naming it (`"SpendCap"`, `"CollectionAllowlist"`) is what makes a report
+/// read by role rather than by slot.
+pub fn cast_policy_at(ctx: &mut AnchorContext, s: &SessionCast, role: &str, seed: u64) -> Pubkey {
+    let policy = derive_policy(s.session, seed);
+    ctx.alias(policy, role);
+    policy
+}
+
+/// Alias the session's first policy (slot 0) by `role`. Shorthand for
+/// `cast_policy_at(.., 0)` — the common single-policy case.
+pub fn cast_policy(ctx: &mut AnchorContext, s: &SessionCast, role: &str) -> Pubkey {
+    cast_policy_at(ctx, s, role, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios — open + fund a session, attach policies. The opening beat every
+// test repeats, collapsed to one call.
+// ---------------------------------------------------------------------------
+
+/// Send `InitSession` for an already-cast session with an explicit `expiry`. The
+/// low-level opener for tests that pin a non-default lifetime (extend / expiry).
 pub fn init_session(
-    svm: &mut LiteSVM,
+    ctx: &mut AnchorContext,
     owner: &Keypair,
-    secs_from_now: i64,
-) -> std::result::Result<(Pubkey, Keypair), FailedTransactionMetadata> {
-    let session_kp = Keypair::new();
-    let session_key = session_kp.pubkey();
-    let expiry = now(svm)
-        .checked_add(secs_from_now)
-        .expect("expiry timestamp overflow");
-    let (session_pda, _) = derive_session_pda(&owner.pubkey(), &session_key);
-    let ix = init_session_ix(&owner.pubkey(), &session_pda, session_key, expiry);
-    send_ix(svm, ix, &[owner])?;
-    Ok((session_pda, session_kp))
-}
-
-pub fn revoke_session_ix(owner: &Pubkey, session_pda: &Pubkey) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::RevokeSession {
-            owner: *owner,
-            session: *session_pda,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::RevokeSession {}.data(),
-    }
-}
-
-pub fn revoke_session(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        revoke_session_ix(&owner.pubkey(), session_pda),
-        &[owner],
-    )
-}
-
-pub fn extend_session_ix(owner: &Pubkey, session_pda: &Pubkey, new_expiry: i64) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::ExtendSession {
-            owner: *owner,
-            session: *session_pda,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::ExtendSession {
-            args: bastion::ExtendSessionArgs { new_expiry },
-        }
-        .data(),
-    }
-}
-
-pub fn extend_session(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    new_expiry: i64,
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        extend_session_ix(&owner.pubkey(), session_pda, new_expiry),
-        &[owner],
-    )
-}
-
-pub fn close_session_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    child_policies: &[Pubkey],
-) -> Instruction {
-    use anchor_lang::solana_program::instruction::AccountMeta;
-    let mut metas = bastion::accounts::CloseSession {
-        owner: *owner,
-        session: *session_pda,
-    }
-    .to_account_metas(None);
-    for p in child_policies {
-        metas.push(AccountMeta::new(*p, false));
-    }
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::CloseSession {}.data(),
-    }
-}
-
-pub fn close_session(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    child_policies: &[Pubkey],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        close_session_ix(&owner.pubkey(), session_pda, child_policies),
-        &[owner],
-    )
-}
-
-pub fn attach_policy_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    policy_pda: &Pubkey,
-    data: bastion::state::policy::PolicyData,
-    existing_policies: &[Pubkey],
-) -> Instruction {
-    use anchor_lang::solana_program::instruction::AccountMeta;
-    let mut metas = bastion::accounts::AttachPolicy {
-        owner: *owner,
-        session: *session_pda,
-        policy: *policy_pda,
-        system_program: system_program::ID,
-    }
-    .to_account_metas(None);
-    for p in existing_policies {
-        metas.push(AccountMeta::new_readonly(*p, false));
-    }
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::AttachPolicy { data }.data(),
-    }
-}
-
-pub fn attach_policy(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    data: bastion::state::policy::PolicyData,
-    existing_policies: &[Pubkey],
-) -> std::result::Result<(Pubkey, u64), FailedTransactionMetadata> {
-    let session = fetch_session(svm, session_pda);
-    let seed = session.policy_count as u64;
-    let (policy_pda, _) = derive_policy_pda(session_pda, seed);
-    let ix = attach_policy_ix(
-        &owner.pubkey(),
-        session_pda,
-        &policy_pda,
-        data,
-        existing_policies,
-    );
-    send_ix(svm, ix, &[owner])?;
-    Ok((policy_pda, seed))
-}
-
-pub fn fetch_policy(svm: &LiteSVM, policy_pda: &Pubkey) -> bastion::state::policy::Policy {
-    let acct = svm.get_account(policy_pda).expect("policy account");
-    anchor_lang::AccountDeserialize::try_deserialize(&mut &acct.data[..]).expect("deser Policy")
-}
-
-pub fn update_policy_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    policy_pda: &Pubkey,
-    seed: u64,
-    new_data: bastion::state::policy::PolicyData,
-) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::UpdatePolicy {
-            owner: *owner,
-            session: *session_pda,
-            policy: *policy_pda,
-            system_program: system_program::ID,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::UpdatePolicy { seed, new_data }.data(),
-    }
-}
-
-pub fn update_policy(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    policy_pda: &Pubkey,
-    seed: u64,
-    new_data: bastion::state::policy::PolicyData,
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        update_policy_ix(&owner.pubkey(), session_pda, policy_pda, seed, new_data),
-        &[owner],
-    )
-}
-
-pub fn detach_policy_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    policy_pda: &Pubkey,
-    seed: u64,
-    other_policies: &[Pubkey],
-) -> Instruction {
-    use anchor_lang::solana_program::instruction::AccountMeta;
-    let mut metas = bastion::accounts::DetachPolicy {
-        owner: *owner,
-        session: *session_pda,
-        policy: *policy_pda,
-    }
-    .to_account_metas(None);
-    for p in other_policies {
-        metas.push(AccountMeta::new_readonly(*p, false));
-    }
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::DetachPolicy { seed }.data(),
-    }
-}
-
-pub fn detach_policy(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    policy_pda: &Pubkey,
-    seed: u64,
-    other_policies: &[Pubkey],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        detach_policy_ix(
-            &owner.pubkey(),
-            session_pda,
-            policy_pda,
-            seed,
-            other_policies,
-        ),
-        &[owner],
-    )
-}
-
-pub fn sweep_delegate_ix(
-    owner: &Pubkey,
-    session_pda: &Pubkey,
-    delegate_pda: &Pubkey,
-    destination: &Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::SweepDelegate {
-            owner: *owner,
-            session: *session_pda,
-            delegate: *delegate_pda,
-            destination: *destination,
-            system_program: system_program::ID,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::SweepDelegate {}.data(),
-    }
-}
-
-pub fn sweep_delegate(
-    svm: &mut LiteSVM,
-    owner: &Keypair,
-    session_pda: &Pubkey,
-    delegate_pda: &Pubkey,
-    destination: &Pubkey,
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        sweep_delegate_ix(&owner.pubkey(), session_pda, delegate_pda, destination),
-        &[owner],
-    )
-}
-
-pub fn execute_batch_ix(
-    session_key: &Pubkey,
-    session_pda: &Pubkey,
-    wrapped_ixs: Vec<bastion::state::wrapped_ix::WrappedInstruction>,
-    policy_count: u8,
-    expected_nonce: Option<u64>,
-    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
-) -> Instruction {
-    let mut metas = bastion::accounts::Execute {
-        session_key: *session_key,
-        session: *session_pda,
-        instructions_sysvar: solana_instructions_sysvar::ID,
-    }
-    .to_account_metas(None);
-    metas.extend_from_slice(extra);
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::Execute {
-            wrapped_ixs,
-            policy_count,
-            expected_nonce,
-            manifest: None,
-        }
-        .data(),
-    }
-}
-
-pub fn execute_ix(
-    session_key: &Pubkey,
-    session_pda: &Pubkey,
-    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
-    policy_count: u8,
-    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
-) -> Instruction {
-    execute_batch_ix(
-        session_key,
-        session_pda,
-        vec![wrapped_ix],
-        policy_count,
-        None,
-        extra,
-    )
-}
-
-pub fn execute(
-    svm: &mut LiteSVM,
-    session_key: &Keypair,
-    session_pda: &Pubkey,
-    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
-    policy_count: u8,
-    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        execute_ix(
-            &session_key.pubkey(),
-            session_pda,
-            wrapped_ix,
-            policy_count,
-            extra,
-        ),
-        &[session_key],
-    )
-}
-
-pub fn execute_batch(
-    svm: &mut LiteSVM,
-    session_key: &Keypair,
-    session_pda: &Pubkey,
-    wrapped_ixs: Vec<bastion::state::wrapped_ix::WrappedInstruction>,
-    policy_count: u8,
-    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        execute_batch_ix(
-            &session_key.pubkey(),
-            session_pda,
-            wrapped_ixs,
-            policy_count,
-            None,
-            extra,
-        ),
-        &[session_key],
-    )
-}
-
-pub fn execute_with_nonce(
-    svm: &mut LiteSVM,
-    session_key: &Keypair,
-    session_pda: &Pubkey,
-    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
-    policy_count: u8,
-    expected_nonce: Option<u64>,
-    extra: &[anchor_lang::solana_program::instruction::AccountMeta],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    send_ix(
-        svm,
-        execute_batch_ix(
-            &session_key.pubkey(),
-            session_pda,
-            vec![wrapped_ix],
-            policy_count,
-            expected_nonce,
-            extra,
-        ),
-        &[session_key],
-    )
-}
-
-pub fn empty_wrapped_ix() -> bastion::state::wrapped_ix::WrappedInstruction {
-    bastion::state::wrapped_ix::WrappedInstruction {
-        program_id: anchor_lang::system_program::ID,
-        accounts: vec![],
-        data: vec![],
-    }
-}
-
-pub fn transfer_wrapped_ix(lamports: u64) -> bastion::state::wrapped_ix::WrappedInstruction {
-    use bastion::state::wrapped_ix::{CompactAccountMeta, WrappedInstruction};
-    let mut data = vec![0u8; 12];
-    data[0..4].copy_from_slice(&2u32.to_le_bytes());
-    data[4..12].copy_from_slice(&lamports.to_le_bytes());
-
-    WrappedInstruction {
-        program_id: anchor_lang::system_program::ID,
-        accounts: vec![
-            CompactAccountMeta::new(0, true, true),
-            CompactAccountMeta::new(1, false, true),
-        ],
-        data,
-    }
-}
-
-pub fn fetch_session(svm: &LiteSVM, session_pda: &Pubkey) -> bastion::state::session::Session {
-    let acct = svm.get_account(session_pda).expect("session account");
-    anchor_lang::AccountDeserialize::try_deserialize(&mut &acct.data[..]).expect("deser Session")
-}
-
-const TOKEN_ACCT_RENT: u64 = 2_039_280;
-
-fn pack_spl_account(mint: Pubkey, owner: Pubkey, amount: u64) -> Vec<u8> {
-    let mut buf = vec![0u8; spl_token_interface::state::Account::LEN];
-    let acct = spl_token_interface::state::Account {
-        mint,
-        owner,
-        amount,
-        delegate: COption::None,
-        state: spl_token_interface::state::AccountState::Initialized,
-        is_native: COption::None,
-        delegated_amount: 0,
-        close_authority: COption::None,
-    };
-    spl_token_interface::state::Account::pack_into_slice(&acct, &mut buf);
-    buf
-}
-
-pub fn make_spl_token_account(
-    svm: &mut LiteSVM,
-    key: &Pubkey,
-    mint: Pubkey,
-    owner_pk: Pubkey,
-    amount: u64,
+    session_kp: &Keypair,
+    s: &SessionCast,
+    expiry: i64,
 ) {
-    let data = pack_spl_account(mint, owner_pk, amount);
-    let acct = solana_account::Account {
-        lamports: TOKEN_ACCT_RENT,
-        data,
-        owner: spl_token_interface::id(),
-        executable: false,
-        rent_epoch: 0,
-    };
-    svm.set_account(*key, acct).expect("set spl token account");
+    ctx.tx(&[owner])
+        .build(
+            s.bundle,
+            bastion::instruction::InitSession {
+                args: bastion::InitSessionArgs {
+                    session_key: session_kp.pubkey(),
+                    expiry,
+                },
+            },
+        )
+        .send_ok();
 }
 
-pub fn make_t22_token_account(
-    svm: &mut LiteSVM,
-    key: &Pubkey,
-    mint: Pubkey,
-    owner_pk: Pubkey,
-    amount: u64,
-) {
-    let data = pack_spl_account(mint, owner_pk, amount);
-    let acct = solana_account::Account {
-        lamports: TOKEN_ACCT_RENT,
-        data,
-        owner: spl_token_2022_interface::id(),
-        executable: false,
-        rent_epoch: 0,
-    };
-    svm.set_account(*key, acct).expect("set t22 token account");
-}
-
-pub fn make_nft_mint(svm: &mut LiteSVM, mint_pk: &Pubkey) {
-    let mint = spl_token_interface::state::Mint {
-        mint_authority: COption::None,
-        supply: 1,
-        decimals: 0,
-        is_initialized: true,
-        freeze_authority: COption::None,
-    };
-    let mut data = vec![0u8; spl_token_interface::state::Mint::LEN];
-    spl_token_interface::state::Mint::pack_into_slice(&mint, &mut data);
-    let acct = solana_account::Account {
-        lamports: TOKEN_ACCT_RENT,
-        data,
-        owner: spl_token_interface::id(),
-        executable: false,
-        rent_epoch: 0,
-    };
-    svm.set_account(*mint_pk, acct).expect("set NFT mint");
-}
-
-pub fn derive_metadata_pda(mint: &Pubkey) -> Pubkey {
-    let (pda, _) = Pubkey::find_program_address(
-        &[SEED_METADATA, MPL_TOKEN_METADATA_ID.as_ref(), mint.as_ref()],
-        &MPL_TOKEN_METADATA_ID,
-    );
-    pda
-}
-
-fn build_metadata_bytes(verified_collection: Pubkey) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(4u8);
-    v.extend(&[0u8; 32]);
-    v.extend(&[0u8; 32]);
-    v.extend(&3u32.to_le_bytes());
-    v.extend(b"NFT");
-    v.extend(&3u32.to_le_bytes());
-    v.extend(b"NFT");
-    v.extend(&1u32.to_le_bytes());
-    v.extend(b"x");
-    v.extend(&0u16.to_le_bytes());
-    v.push(0);
-    v.push(0);
-    v.push(1);
-    v.push(0);
-    v.push(0);
-    v.push(1);
-    v.push(1);
-    v.extend(verified_collection.as_ref());
-    v
-}
-
-pub fn make_verified_collection_metadata(
-    svm: &mut LiteSVM,
-    mint: &Pubkey,
-    verified_collection: Pubkey,
-) -> Pubkey {
-    let pda = derive_metadata_pda(mint);
-    let data = build_metadata_bytes(verified_collection);
-    let acct = solana_account::Account {
-        lamports: TOKEN_ACCT_RENT,
-        data,
-        owner: MPL_TOKEN_METADATA_ID,
-        executable: false,
-        rent_epoch: 0,
-    };
-    svm.set_account(pda, acct).expect("set metadata account");
-    pda
-}
-
-fn build_metadata_with_creators(creators: &[(Pubkey, bool, u8)]) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.push(4u8);
-    v.extend(&[0u8; 32]);
-    v.extend(&[0u8; 32]);
-    v.extend(&3u32.to_le_bytes());
-    v.extend(b"NFT");
-    v.extend(&3u32.to_le_bytes());
-    v.extend(b"NFT");
-    v.extend(&1u32.to_le_bytes());
-    v.extend(b"x");
-    v.extend(&0u16.to_le_bytes());
-    if creators.is_empty() {
-        v.push(0u8);
-    } else {
-        v.push(1u8);
-        v.extend(&u32::try_from(creators.len()).unwrap().to_le_bytes());
-        for (addr, verified, share) in creators {
-            v.extend(addr.as_ref());
-            v.push(if *verified { 1u8 } else { 0u8 });
-            v.push(*share);
-        }
-    }
-    v.push(0u8);
-    v.push(1u8);
-    v.push(0u8);
-    v.push(0u8);
-    v.push(0u8);
-    v
-}
-
-pub fn make_creator_metadata(
-    svm: &mut LiteSVM,
-    mint: &Pubkey,
-    creators: &[(Pubkey, bool, u8)],
-) -> Pubkey {
-    let pda = derive_metadata_pda(mint);
-    let data = build_metadata_with_creators(creators);
-    let acct = solana_account::Account {
-        lamports: TOKEN_ACCT_RENT,
-        data,
-        owner: MPL_TOKEN_METADATA_ID,
-        executable: false,
-        rent_epoch: 0,
-    };
-    svm.set_account(pda, acct).expect("set metadata account");
-    pda
-}
-
-pub fn set_cu_limit_ix(limit: u32) -> Instruction {
-    let mut data = vec![2u8];
-    data.extend_from_slice(&limit.to_le_bytes());
-    Instruction {
-        program_id: COMPUTE_BUDGET_ID,
-        accounts: vec![],
-        data,
-    }
-}
-
-pub fn set_cu_price_ix(price: u64) -> Instruction {
-    let mut data = vec![3u8];
-    data.extend_from_slice(&price.to_le_bytes());
-    Instruction {
-        program_id: COMPUTE_BUDGET_ID,
-        accounts: vec![],
-        data,
-    }
-}
-
-pub fn setup_funded_session(
-    svm: &mut LiteSVM,
+/// Cast, open (expiry `TEST_CLOCK_TS + DAY`), and fund a session: the session
+/// signer gets 5 SOL to pay execute fees, the delegate vault gets
+/// `delegate_funding`. The canonical session opener — returns the cast.
+pub fn open_session(
+    ctx: &mut AnchorContext,
     owner: &Keypair,
-) -> (Pubkey, Keypair, Pubkey, Pubkey) {
-    let (session_pda, session_kp) = init_session(svm, owner, 86_400).expect("init");
-    airdrop(svm, &session_kp.pubkey(), ONE_SOL);
-    let (delegate, _) = derive_delegate_pda(&owner.pubkey(), &session_kp.pubkey());
-    airdrop(svm, &delegate, ONE_SOL);
-    let dest = Pubkey::new_unique();
-    airdrop(svm, &dest, 1);
-    (session_pda, session_kp, delegate, dest)
+    session_kp: &Keypair,
+    delegate_funding: u64,
+) -> SessionCast {
+    let s = cast_session(ctx, owner, session_kp);
+    init_session(ctx, owner, session_kp, &s, TEST_CLOCK_TS + DAY);
+    ctx.svm.airdrop(&session_kp.pubkey(), 5 * ONE_SOL).unwrap();
+    ctx.svm.airdrop(&s.delegate, delegate_funding).unwrap();
+    s
 }
 
-pub fn extras_sol_transfer_one_policy(
-    policy: &Pubkey,
-    delegate: &Pubkey,
-    dest: &Pubkey,
-) -> Vec<AccountMeta> {
-    vec![
-        AccountMeta::new(*policy, false),
-        AccountMeta::new(*delegate, false),
-        AccountMeta::new(*delegate, false),
-        AccountMeta::new(*dest, false),
-        AccountMeta::new_readonly(anchor_lang::system_program::ID, false),
-    ]
+/// The whole opening beat in one line: a funded context, an `owner` and
+/// `session-signer` actor, and an open + funded session. Returns
+/// `(ctx, owner, session_kp, cast)` so the scenario keeps the keypairs it signs
+/// with. Replaces the four-line `bastion_ctx` + two `cast_actor` + `cast_session`
+/// preamble.
+pub fn bootstrap(delegate_funding: u64) -> (AnchorContext, Keypair, Keypair, SessionCast) {
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = open_session(&mut ctx, &owner, &session_kp, delegate_funding);
+    (ctx, owner, session_kp, s)
 }
 
-pub fn execute_with_outer_ixs(
-    svm: &mut LiteSVM,
-    session_key: &Keypair,
-    session_pda: &Pubkey,
-    wrapped_ix: bastion::state::wrapped_ix::WrappedInstruction,
-    policy_count: u8,
-    extras: &[AccountMeta],
-    extra_outer: Vec<Instruction>,
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    let exec_ix = execute_ix(
-        &session_key.pubkey(),
-        session_pda,
-        wrapped_ix,
-        policy_count,
-        extras,
-    );
-    let mut ixs = extra_outer;
-    ixs.push(exec_ix);
-    let bh = svm.latest_blockhash();
-    let tx = solana_transaction::Transaction::new_signed_with_payer(
-        &ixs,
-        Some(&session_key.pubkey()),
-        &[session_key],
-        bh,
-    );
-    svm.send_transaction(tx).map(|_| ())
+/// Attach `data` as the session's next policy, aliased by `role`, and return its
+/// PDA. The attach chain — every already-attached policy riding as a readonly
+/// remaining account so the program can re-hash the set — is handled here by
+/// reading `Session::next_seed`. Assumes no detach gaps (true for attach-then-
+/// execute scenarios); for interleaved detaches drive `AttachPolicy` directly.
+pub fn attach(
+    ctx: &mut AnchorContext,
+    owner: &Keypair,
+    s: &SessionCast,
+    role: &str,
+    data: PolicyData,
+) -> Pubkey {
+    let session: Session = ctx.get_account(&s.session).expect("session is open");
+    let seed = session.next_seed;
+    let policy = cast_policy_at(ctx, s, role, seed);
+    let prior: Vec<AccountMeta> = (0..seed)
+        .map(|i| AccountMeta::new_readonly(derive_policy(s.session, i), false))
+        .collect();
+    ctx.tx(&[owner])
+        .build(s.bundle, bastion::instruction::AttachPolicy { data })
+        .remaining_accounts(&prior)
+        .send_ok();
+    policy
+}
+
+/// Attach a batch of `(role, data)` policies in order, each carrying the prior
+/// ones as the attach chain. Returns their PDAs in slot order. The multi-policy
+/// counterpart to `attach` (e.g. a composition scenario's six policies).
+pub fn attach_all(
+    ctx: &mut AnchorContext,
+    owner: &Keypair,
+    s: &SessionCast,
+    specs: Vec<(&str, PolicyData)>,
+) -> Vec<Pubkey> {
+    let mut policies: Vec<Pubkey> = Vec::with_capacity(specs.len());
+    for (role, data) in specs {
+        let prior: Vec<AccountMeta> = policies
+            .iter()
+            .map(|p| AccountMeta::new_readonly(*p, false))
+            .collect();
+        let policy = cast_policy_at(ctx, s, role, policies.len() as u64);
+        ctx.tx(&[owner])
+            .build(s.bundle, bastion::instruction::AttachPolicy { data })
+            .remaining_accounts(&prior)
+            .send_ok();
+        policies.push(policy);
+    }
+    policies
+}
+
+// ---------------------------------------------------------------------------
+// Native ed25519 verify ix — stays test-side because it signs with a `Keypair`
+// (a dev-dependency the `src` builders can't reach).
+// ---------------------------------------------------------------------------
+
+/// A native ed25519-program verify ix: `signer` signs `message`, laid out in the
+/// single-signature wire format the runtime's ed25519 program expects. A
+/// manifest-gated execute rides one of these so the program can bind who signed
+/// the pinned commitment.
+pub fn ed25519_ix(signer: &Keypair, message: &[u8]) -> Instruction {
+    let pk = signer.pubkey().to_bytes();
+    let sig = signer.sign_message(message);
+    let sig_bytes = sig.as_ref();
+
+    let pk_offset: u16 = 16;
+    let sig_offset: u16 = 16 + 32;
+    let msg_offset: u16 = 16 + 32 + 64;
+    let msg_size: u16 = message.len() as u16;
+    let any: u16 = u16::MAX;
+
+    let mut data: Vec<u8> = Vec::new();
+    data.push(1);
+    data.push(0);
+    data.extend_from_slice(&sig_offset.to_le_bytes());
+    data.extend_from_slice(&any.to_le_bytes());
+    data.extend_from_slice(&pk_offset.to_le_bytes());
+    data.extend_from_slice(&any.to_le_bytes());
+    data.extend_from_slice(&msg_offset.to_le_bytes());
+    data.extend_from_slice(&msg_size.to_le_bytes());
+    data.extend_from_slice(&any.to_le_bytes());
+    data.extend_from_slice(&pk);
+    data.extend_from_slice(sig_bytes);
+    data.extend_from_slice(message);
+
+    Instruction {
+        program_id: bastion::constants::ED25519_PROGRAM_ID,
+        accounts: vec![],
+        data,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outcome assertion.
+// ---------------------------------------------------------------------------
+
+/// Whether an execute is expected to land or to be rejected with a named error.
+/// Lets a table-driven scenario state its expectation inline.
+pub enum Expect<'a> {
+    Ok,
+    Err(&'a str),
 }

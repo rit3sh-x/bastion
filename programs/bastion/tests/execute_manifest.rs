@@ -1,297 +1,176 @@
+//! Holder-signed *manifest*-gated execute. A manifest is a committed list of
+//! stateless policies; the owner pins its hash on the session, then signs the
+//! hash with an ed25519 instruction riding in the same transaction as the
+//! `execute`. The program reads the instructions sysvar, verifies the signature
+//! covers the pinned hash, and enforces the manifest's policies inline (no
+//! per-policy accounts; that's what "stateless" buys).
+//!
+//! The ed25519 verify ix can't be a bundle/`build` instruction (it's a native
+//! program ix that must sit *before* the execute so the sysvar inspection finds
+//! it), so the manifest sends go through `ctx.send_instructions(&[ed25519,
+//! execute], ..)`. `ed25519_ix` and `pin_manifest_ix` come from the shared
+//! façade; only the manifest-specific `execute_manifest_ix` stays local.
+
 mod helpers;
 
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
-use anchor_lang::{InstructionData, ToAccountMetas};
-use bastion::constants::ED25519_PROGRAM_ID;
-use bastion::error::BastionError;
-use bastion::state::policy::PolicyData;
-use litesvm::types::FailedTransactionMetadata;
-use litesvm::LiteSVM;
-use solana_keypair::Keypair;
-use solana_message::{Message, VersionedMessage};
+use anchor_litesvm::Report;
+use bastion::state::counter::SpendState;
+use bastion::state::policy::{Asset, PolicyData, WindowKind};
+use helpers::*;
 use solana_signer::Signer;
-use solana_transaction::versioned::VersionedTransaction;
 
-use crate::helpers::*;
-
+/// A one-policy `ProgramAllowlist` manifest naming `program`.
 fn manifest_allow(program: anchor_lang::prelude::Pubkey) -> Vec<PolicyData> {
     vec![PolicyData::ProgramAllowlist {
         programs: vec![program],
     }]
 }
 
-fn pin_manifest_ix(
-    owner: &anchor_lang::prelude::Pubkey,
-    session_pda: &anchor_lang::prelude::Pubkey,
-    manifest_hash: [u8; 32],
-) -> Instruction {
-    Instruction {
-        program_id: bastion::id(),
-        accounts: bastion::accounts::PinManifest {
-            owner: *owner,
-            session: *session_pda,
-        }
-        .to_account_metas(None),
-        data: bastion::instruction::PinManifest { manifest_hash }.data(),
-    }
-}
-
-fn ed25519_ix(signer: &Keypair, message: &[u8]) -> Instruction {
-    let pk = signer.pubkey().to_bytes();
-    let sig = signer.sign_message(message);
-    let sig_bytes = sig.as_ref();
-
-    let pk_offset: u16 = 16;
-    let sig_offset: u16 = 16 + 32;
-    let msg_offset: u16 = 16 + 32 + 64;
-    let msg_size: u16 = message.len() as u16;
-    let any: u16 = u16::MAX;
-
-    let mut data: Vec<u8> = Vec::new();
-    data.push(1);
-    data.push(0);
-    data.extend_from_slice(&sig_offset.to_le_bytes());
-    data.extend_from_slice(&any.to_le_bytes());
-    data.extend_from_slice(&pk_offset.to_le_bytes());
-    data.extend_from_slice(&any.to_le_bytes());
-    data.extend_from_slice(&msg_offset.to_le_bytes());
-    data.extend_from_slice(&msg_size.to_le_bytes());
-    data.extend_from_slice(&any.to_le_bytes());
-    data.extend_from_slice(&pk);
-    data.extend_from_slice(sig_bytes);
-    data.extend_from_slice(message);
-
-    Instruction {
-        program_id: ED25519_PROGRAM_ID,
-        accounts: vec![],
-        data,
-    }
-}
-
+/// Build the manifest-gated `Execute` ix (fixed base from the bundle + the
+/// positional dispatch tail), for `policy_count: 0` with the manifest inline.
 fn execute_manifest_ix(
-    session_key: &anchor_lang::prelude::Pubkey,
-    session_pda: &anchor_lang::prelude::Pubkey,
+    ctx: &mut anchor_litesvm::AnchorContext,
+    s: &SessionCast,
     manifest: Vec<PolicyData>,
-    extra: &[AccountMeta],
+    extras: &[AccountMeta],
 ) -> Instruction {
-    let mut metas = bastion::accounts::Execute {
-        session_key: *session_key,
-        session: *session_pda,
-        instructions_sysvar: solana_instructions_sysvar::ID,
-    }
-    .to_account_metas(None);
-    metas.extend_from_slice(extra);
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::Execute {
-            wrapped_ixs: vec![transfer_wrapped_ix(1_000)],
+    let mut ix = ctx.program().build_ix(
+        s.bundle,
+        bastion::instruction::Execute {
+            wrapped_ixs: vec![transfer_wrapped(1_000)],
             policy_count: 0,
             expected_nonce: None,
             manifest: Some(manifest),
-        }
-        .data(),
-    }
-}
-
-fn execute_no_manifest_ix(
-    session_key: &anchor_lang::prelude::Pubkey,
-    session_pda: &anchor_lang::prelude::Pubkey,
-    extra: &[AccountMeta],
-) -> Instruction {
-    let mut metas = bastion::accounts::Execute {
-        session_key: *session_key,
-        session: *session_pda,
-        instructions_sysvar: solana_instructions_sysvar::ID,
-    }
-    .to_account_metas(None);
-    metas.extend_from_slice(extra);
-    Instruction {
-        program_id: bastion::id(),
-        accounts: metas,
-        data: bastion::instruction::Execute {
-            wrapped_ixs: vec![transfer_wrapped_ix(1_000)],
-            policy_count: 0,
-            expected_nonce: None,
-            manifest: None,
-        }
-        .data(),
-    }
-}
-
-fn send_tx(
-    svm: &mut LiteSVM,
-    ixs: &[Instruction],
-    signers: &[&Keypair],
-) -> std::result::Result<(), FailedTransactionMetadata> {
-    let bh = svm.latest_blockhash();
-    let payer = signers[0].pubkey();
-    let msg = Message::new_with_blockhash(ixs, Some(&payer), &bh);
-    let tx =
-        VersionedTransaction::try_new(VersionedMessage::Legacy(msg), signers).expect("sign tx");
-    svm.send_transaction(tx).map(|_| ())
-}
-
-fn zero_policy_extras(
-    delegate: &anchor_lang::prelude::Pubkey,
-    dest: &anchor_lang::prelude::Pubkey,
-) -> Vec<AccountMeta> {
-    vec![
-        AccountMeta::new(*delegate, false),
-        AccountMeta::new(*delegate, false),
-        AccountMeta::new(*dest, false),
-        AccountMeta::new_readonly(anchor_lang::system_program::ID, false),
-    ]
+        },
+    );
+    ix.accounts.extend_from_slice(extras);
+    ix
 }
 
 #[test]
 fn manifest_allows_signed_stateless_policy() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a holder-signed manifest of stateless policies gates an execute",
+        "The owner pins a ProgramAllowlist(System) manifest hash on the session and signs \
+         it with an ed25519 ix riding in the execute transaction. The session's wrapped SOL \
+         transfer falls inside the allowlist, so the manifest passes and the transfer settles.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
     let manifest = manifest_allow(anchor_lang::system_program::ID);
     let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
 
-    send_tx(
-        &mut svm,
-        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
-        &[&owner],
-    )
-    .expect("pin manifest");
+    md.step("Owner pins the manifest hash on the session");
+    ctx.send_ok(pin_manifest_ix(owner.pubkey(), s.session, hash), &[&owner]);
 
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    send_tx(
-        &mut svm,
-        &[
-            ed25519_ix(&owner, &hash),
-            execute_manifest_ix(&session_kp.pubkey(), &session_pda, manifest, &extras),
-        ],
-        &[&session_kp],
-    )
-    .expect("manifest-gated execute within allowlist");
+    md.step("Session executes a wrapped SOL transfer: ed25519 sig + manifest-gated execute");
+    ctx.svm.expire_blockhash();
+    let extras = transfer_tail(&[], s.delegate, recipient);
+    let exec = execute_manifest_ix(&mut ctx, &s, manifest, &extras);
+    ctx.send_instructions(&[ed25519_ix(&owner, &hash), exec], &[&session_kp])
+        .assert_success();
+
+    md.check(
+        "recipient received the wrapped transfer",
+        ONE_SOL + 1_000,
+        ctx.svm.get_balance(&recipient).unwrap(),
+    );
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn manifest_without_signature_rejected() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a manifest-gated execute without the holder signature is rejected",
+        "The manifest hash is pinned, but the execute is sent alone (no ed25519 verify ix in \
+         the transaction). With no signature to cover the pinned hash, the program rejects \
+         with ManifestSignatureInvalid.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
     let manifest = manifest_allow(anchor_lang::system_program::ID);
     let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
-    send_tx(
-        &mut svm,
-        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
-        &[&owner],
-    )
-    .expect("pin");
 
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    let res = send_tx(
-        &mut svm,
-        &[execute_manifest_ix(
-            &session_kp.pubkey(),
-            &session_pda,
-            manifest,
-            &extras,
-        )],
-        &[&session_kp],
-    );
-    assert_svm_anchor_error(res, BastionError::ManifestSignatureInvalid);
+    md.step("Owner pins the manifest hash");
+    ctx.send_ok(pin_manifest_ix(owner.pubkey(), s.session, hash), &[&owner]);
+
+    md.step("Execute alone (no ed25519 sig): rejected with ManifestSignatureInvalid");
+    ctx.svm.expire_blockhash();
+    let extras = transfer_tail(&[], s.delegate, recipient);
+    let exec = execute_manifest_ix(&mut ctx, &s, manifest, &extras);
+    ctx.send_instructions(&[exec], &[&session_kp])
+        .assert_error("ManifestSignatureInvalid");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn manifest_not_pinned_rejected() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a manifest-gated execute with no pinned hash is rejected",
+        "The owner signs the manifest hash, but never pins it on the session. The program has \
+         no commitment to check the signature against, so the execute is rejected with \
+         ManifestNotPinned.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
     let manifest = manifest_allow(anchor_lang::system_program::ID);
     let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
 
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    let res = send_tx(
-        &mut svm,
-        &[
-            ed25519_ix(&owner, &hash),
-            execute_manifest_ix(&session_kp.pubkey(), &session_pda, manifest, &extras),
-        ],
-        &[&session_kp],
-    );
-    assert_svm_anchor_error(res, BastionError::ManifestNotPinned);
-}
-
-#[test]
-fn pinned_manifest_omitted_rejected() {
-    // The holder cannot bypass a pinned manifest by sending `manifest: None`.
-    // Owner pins a hash; execute that omits the manifest must fail rather than
-    // silently skipping those policies.
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
-
-    let manifest = manifest_allow(anchor_lang::system_program::ID);
-    let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
-
-    send_tx(
-        &mut svm,
-        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
-        &[&owner],
-    )
-    .expect("pin manifest");
-
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    let res = send_tx(
-        &mut svm,
-        &[execute_no_manifest_ix(
-            &session_kp.pubkey(),
-            &session_pda,
-            &extras,
-        )],
-        &[&session_kp],
-    );
-    assert_svm_anchor_error(res, BastionError::ManifestRequired);
+    md.step("No pin: signed execute against an un-pinned session is rejected (ManifestNotPinned)");
+    ctx.svm.expire_blockhash();
+    let extras = transfer_tail(&[], s.delegate, recipient);
+    let exec = execute_manifest_ix(&mut ctx, &s, manifest, &extras);
+    ctx.send_instructions(&[ed25519_ix(&owner, &hash), exec], &[&session_kp])
+        .assert_error("ManifestNotPinned");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn manifest_allows_token_authority_guard() {
-    // TokenAuthorityGuard is stateless → valid in a holder-signed
-    // manifest. The leg is a non-token SOL transfer so the guard is a no-op;
-    // execute succeeds (no ManifestPolicyNotStateless).
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a stateless TokenAuthorityGuard in a holder-signed manifest executes",
+        "TokenAuthorityGuard is stateless, so it is valid inside a holder-signed manifest. The \
+         executed leg is a non-token SOL transfer, so the guard is a no-op; the execute \
+         succeeds (no ManifestPolicyNotStateless).",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
     let manifest = vec![PolicyData::TokenAuthorityGuard];
     let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
 
-    send_tx(
-        &mut svm,
-        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
-        &[&owner],
-    )
-    .expect("pin manifest");
+    md.step("Owner pins a TokenAuthorityGuard manifest");
+    ctx.send_ok(pin_manifest_ix(owner.pubkey(), s.session, hash), &[&owner]);
 
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    send_tx(
-        &mut svm,
-        &[
-            ed25519_ix(&owner, &hash),
-            execute_manifest_ix(&session_kp.pubkey(), &session_pda, manifest, &extras),
-        ],
-        &[&session_kp],
-    )
-    .expect("manifest with stateless TokenAuthorityGuard executes");
+    md.step("Signed execute with the stateless guard: succeeds (guard is a no-op on SOL)");
+    ctx.svm.expire_blockhash();
+    let extras = transfer_tail(&[], s.delegate, recipient);
+    let exec = execute_manifest_ix(&mut ctx, &s, manifest, &extras);
+    ctx.send_instructions(&[ed25519_ix(&owner, &hash), exec], &[&session_kp])
+        .assert_success();
+
+    md.check(
+        "recipient received the wrapped transfer",
+        ONE_SOL + 1_000,
+        ctx.svm.get_balance(&recipient).unwrap(),
+    );
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn manifest_stateful_policy_rejected() {
-    use bastion::state::counter::SpendState;
-    use bastion::state::policy::{Asset, WindowKind};
-
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a stateful policy in a manifest is rejected",
+        "A SpendCap carries mutable spent-state, so it cannot live in a holder-signed manifest \
+         (the manifest path enforces policies inline, with no account to charge). Pinning and \
+         signing the SpendCap manifest, the execute is rejected with ManifestPolicyNotStateless.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
     let manifest = vec![PolicyData::SpendCap {
         asset: Asset::NativeSol,
@@ -300,22 +179,17 @@ fn manifest_stateful_policy_rejected() {
         state: SpendState::default(),
     }];
     let hash = bastion::utils::manifest::compute_manifest_hash(&manifest);
-    send_tx(
-        &mut svm,
-        &[pin_manifest_ix(&owner.pubkey(), &session_pda, hash)],
-        &[&owner],
-    )
-    .expect("pin");
 
-    svm.expire_blockhash();
-    let extras = zero_policy_extras(&delegate, &dest);
-    let res = send_tx(
-        &mut svm,
-        &[
-            ed25519_ix(&owner, &hash),
-            execute_manifest_ix(&session_kp.pubkey(), &session_pda, manifest, &extras),
-        ],
-        &[&session_kp],
+    md.step("Owner pins the (stateful) SpendCap manifest");
+    ctx.send_ok(pin_manifest_ix(owner.pubkey(), s.session, hash), &[&owner]);
+
+    md.step(
+        "Signed execute: rejected because SpendCap isn't stateless (ManifestPolicyNotStateless)",
     );
-    assert_svm_anchor_error(res, BastionError::ManifestPolicyNotStateless);
+    ctx.svm.expire_blockhash();
+    let extras = transfer_tail(&[], s.delegate, recipient);
+    let exec = execute_manifest_ix(&mut ctx, &s, manifest, &extras);
+    ctx.send_instructions(&[ed25519_ix(&owner, &hash), exec], &[&session_kp])
+        .assert_error("ManifestPolicyNotStateless");
+    ctx.report_execution(&mut md);
 }

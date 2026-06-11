@@ -9,6 +9,11 @@ pub struct ExtendSessionArgs {
     pub new_expiry: i64,
 }
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 pub struct ExtendSession<'info> {
     pub owner: Signer<'info>,

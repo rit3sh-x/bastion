@@ -17,6 +17,11 @@ use crate::state::session::Session;
 use crate::state::wrapped_ix::WrappedInstruction;
 use crate::utils::hash::compute_policies_hash;
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 pub struct Execute<'info> {
     pub session_key: Signer<'info>,

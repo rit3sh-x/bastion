@@ -1,145 +1,212 @@
 mod helpers;
 
-use anchor_lang::prelude::Pubkey;
-use bastion::error::BastionError;
-use bastion::state::policy::{Asset, PolicyData};
-use solana_signer::Signer;
-
-use crate::helpers::*;
+use anchor_litesvm::{Pubkey, Report};
+use bastion::state::policy::{Asset, Policy, PolicyData};
+use helpers::*;
 
 #[test]
 fn per_counterparty_cap_charges_inflow() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
-
-    let data = PolicyData::PerCounterpartyCap {
-        receiver: dest,
-        asset: Asset::NativeSol,
-        max: 5_000,
-        sent: 0,
-    };
-    let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
-
-    execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(3_000),
-        1,
-        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
-    )
-    .expect("under cap");
-    svm.expire_blockhash();
-
-    let res = execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(2_001),
-        1,
-        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
+    let mut md = Report::new(
+        "Bastion: a PerCounterpartyCap charges outflow to one receiver, then rejects over the cap",
+        "A session carries a PerCounterpartyCap of 5_000 to one recipient. A transfer of \
+         3_000 charges within the cap; a second of 2_001 pushes the cumulative total to \
+         5_001 and is rejected with CounterpartyCapExceeded.",
     );
-    assert_svm_anchor_error(res, BastionError::CounterpartyCapExceeded);
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
+
+    md.step("Open session + attach a PerCounterpartyCap (5_000 to recipient)");
+    let cap = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "PerCounterpartyCap",
+        PolicyData::PerCounterpartyCap {
+            receiver: recipient,
+            asset: Asset::NativeSol,
+            max: 5_000,
+            sent: 0,
+        },
+    );
+    let extras = transfer_tail(&[cap], s.delegate, recipient);
+
+    md.step("Transfer 3_000 to recipient: within the cap, the policy charges it");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(3_000)],
+                policy_count: 1,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_ok();
+
+    md.step("Transfer 2_001 pushes the cumulative total to 5_001: rejected with CounterpartyCapExceeded");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(2_001)],
+                policy_count: 1,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_err_named("CounterpartyCapExceeded");
+
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn per_counterparty_cap_accumulates_across_calls() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
-
-    let data = PolicyData::PerCounterpartyCap {
-        receiver: dest,
-        asset: Asset::NativeSol,
-        max: 10_000,
-        sent: 0,
-    };
-    let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
-
-    for amt in [3_000_u64, 3_000, 3_000] {
-        svm.expire_blockhash();
-        execute(
-            &mut svm,
-            &session_kp,
-            &session_pda,
-            transfer_wrapped_ix(amt),
-            1,
-            &extras_sol_transfer_one_policy(&p, &delegate, &dest),
-        )
-        .expect("under cap (cumulative 9_000 ≤ 10_000)");
-    }
-
-    let pol = fetch_policy(&svm, &p);
-    match pol.data {
-        PolicyData::PerCounterpartyCap { sent, .. } => assert_eq!(sent, 9_000),
-        _ => panic!("expected PerCounterpartyCap"),
-    }
-
-    svm.expire_blockhash();
-    let res = execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(1_001),
-        1,
-        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
+    let mut md = Report::new(
+        "Bastion: a PerCounterpartyCap accumulates `sent` across separate executes",
+        "A session carries a PerCounterpartyCap of 10_000 to one recipient. Three transfers \
+         of 3_000 each charge (cumulative 9_000 stays within the cap); the policy's `sent` \
+         reads back 9_000. A fourth transfer of 1_001 pushes the total to 10_001 and is \
+         rejected with CounterpartyCapExceeded.",
     );
-    assert_svm_anchor_error(res, BastionError::CounterpartyCapExceeded);
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
+
+    md.step("Open session + attach a PerCounterpartyCap (10_000 to recipient)");
+    let cap = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "PerCounterpartyCap",
+        PolicyData::PerCounterpartyCap {
+            receiver: recipient,
+            asset: Asset::NativeSol,
+            max: 10_000,
+            sent: 0,
+        },
+    );
+    let extras = transfer_tail(&[cap], s.delegate, recipient);
+
+    md.step("Three transfers of 3_000: cumulative 9_000 stays within the cap");
+    for _ in 0..3 {
+        ctx.svm.expire_blockhash();
+        ctx.tx(&[&session_kp])
+            .build(
+                s.bundle,
+                bastion::instruction::Execute {
+                    wrapped_ixs: vec![transfer_wrapped(3_000)],
+                    policy_count: 1,
+                    expected_nonce: None,
+                    manifest: None,
+                },
+            )
+            .remaining_accounts(&extras)
+            .send_ok();
+    }
+
+    let pol: Policy = ctx.get_account(&cap).unwrap();
+    let sent = match pol.data {
+        PolicyData::PerCounterpartyCap { sent, .. } => sent,
+        _ => panic!("expected PerCounterpartyCap"),
+    };
+    md.check("policy accumulated all three transfers", 9_000u64, sent);
+
+    md.step("A fourth transfer of 1_001 pushes the total to 10_001: rejected with CounterpartyCapExceeded");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(1_001)],
+                policy_count: 1,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_err_named("CounterpartyCapExceeded");
+
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn per_counterparty_cap_noop_when_receiver_out_of_scope() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: a PerCounterpartyCap is a no-op when the transfer's receiver is out of scope",
+        "A session carries a PerCounterpartyCap of 1 to an *unrelated* receiver. A transfer \
+         of 50_000 to a different recipient is allowed (the cap doesn't apply) and charges \
+         nothing: the policy's `sent` stays 0.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
+    let unrelated_receiver = ctx.cast_account("unrelated-receiver");
 
-    let unrelated_receiver = Pubkey::new_unique();
+    md.step("Open session + attach a PerCounterpartyCap (max 1 to an unrelated receiver)");
+    let cap = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "PerCounterpartyCap",
+        PolicyData::PerCounterpartyCap {
+            receiver: unrelated_receiver,
+            asset: Asset::NativeSol,
+            max: 1,
+            sent: 0,
+        },
+    );
 
-    let data = PolicyData::PerCounterpartyCap {
-        receiver: unrelated_receiver,
-        asset: Asset::NativeSol,
-        max: 1,
-        sent: 0,
-    };
-    let (p, _) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
+    md.step("Transfer 50_000 to recipient (not the cap's receiver): allowed, no charge");
+    let extras = transfer_tail(&[cap], s.delegate, recipient);
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(50_000)],
+                policy_count: 1,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_ok();
 
-    execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(50_000),
-        1,
-        &extras_sol_transfer_one_policy(&p, &delegate, &dest),
-    )
-    .expect("out-of-scope receiver → no charge, no error");
-
-    let pol = fetch_policy(&svm, &p);
-    match pol.data {
-        PolicyData::PerCounterpartyCap { sent, .. } => {
-            assert_eq!(
-                sent, 0,
-                "sent must remain zero when receiver was out of scope"
-            );
-        }
+    let pol: Policy = ctx.get_account(&cap).unwrap();
+    let sent = match pol.data {
+        PolicyData::PerCounterpartyCap { sent, .. } => sent,
         _ => panic!("expected PerCounterpartyCap"),
-    }
+    };
+    md.check("sent stays zero when receiver was out of scope", 0u64, sent);
+
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn attach_rejects_nft_asset() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 86_400).expect("init");
-    let session = fetch_session(&svm, &session_pda);
-    let (policy_pda, _) = derive_policy_pda(&session_pda, session.next_seed);
-    let ix = attach_policy_ix(
-        &owner.pubkey(),
-        &session_pda,
-        &policy_pda,
-        PolicyData::PerCounterpartyCap {
-            receiver: Pubkey::new_unique(),
-            asset: Asset::AnyNftCount,
-            max: 1,
-            sent: 0,
-        },
-        &[],
+    let mut md = Report::new(
+        "Bastion: AttachPolicy rejects an NFT asset on a PerCounterpartyCap",
+        "PerCounterpartyCap is a lamport/token cap; attaching one with an NFT asset variant \
+         (AnyNftCount) is rejected at attach time.",
     );
-    send_ix(&mut svm, ix, &[&owner]).expect_err("NFT asset variants rejected");
+    // The attach is under test (it must fail), so it stays a manual send_err.
+    let (mut ctx, owner, _session_kp, s) = bootstrap(ONE_SOL);
+
+    md.step("Attach a PerCounterpartyCap with an NFT asset (AnyNftCount): rejected");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::AttachPolicy {
+                data: PolicyData::PerCounterpartyCap {
+                    receiver: Pubkey::new_unique(),
+                    asset: Asset::AnyNftCount,
+                    max: 1,
+                    sent: 0,
+                },
+            },
+        )
+        .send_err();
+    ctx.report_execution(&mut md);
 }

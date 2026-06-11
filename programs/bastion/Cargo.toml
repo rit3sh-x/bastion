@@ -30,11 +30,15 @@ solana-instructions-sysvar = "3.0.1"
 [dev-dependencies]
 borsh = "1.6"
 litesvm = { version = "0.10.0", features = ["precompiles"] }
+litesvm-precompiles = { package = "litesvm", git = "https://github.com/cds-rs/litesvm", branch = "main", features = ["precompiles"] }
 solana-account = "3.2.0"
 solana-message = "3.0.1"
 solana-transaction = "3.0.2"
 solana-signer = "3.0.0"
 solana-keypair = "3.0.1"
+
+[target.'cfg(not(target_os = "solana"))'.dependencies]
+anchor-litesvm = { package = "anchor-litesvm", git = "https://github.com/cds-rs/anchor-litesvm", branch = "turbin3" }
 
 
 [lints.rust]

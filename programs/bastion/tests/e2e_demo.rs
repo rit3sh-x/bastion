@@ -1,122 +1,129 @@
 mod helpers;
 
-use anchor_lang::prelude::Pubkey;
-use anchor_lang::solana_program::instruction::AccountMeta;
-use bastion::error::BastionError;
+use anchor_lang::system_program;
+use anchor_litesvm::{Report, TestHelpers};
 use bastion::state::counter::{CounterState, SpendState};
 use bastion::state::policy::{Asset, PolicyData, WindowKind};
-use solana_signer::Signer;
-
-use crate::helpers::*;
+use helpers::*;
 
 #[test]
 fn demo_full_scenario_replay() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp) = init_session(&mut svm, &owner, 86_400).expect("init");
+    let mut md = Report::new(
+        "Bastion: the full policy stack replayed end to end",
+        "One session carries three stacked policies: ProgramAllowlist, RateLimit (max 3 per \
+         60s), and SpendCap (500_000 per 60s). Three 100_000 transfers pass; the fourth trips \
+         RateLimitExceeded. After the window resets, a 600_000 transfer trips SpendCapExceeded, \
+         and a final 50_000 transfer passes within the reset cap.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(20 * ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
 
-    let session_airdrop = 10_u64
-        .checked_mul(ONE_SOL)
-        .expect("session airdrop overflow");
+    md.step("Attach the stacked policies: ProgramAllowlist, then RateLimit, then SpendCap");
+    let allowlist = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "ProgramAllowlist",
+        PolicyData::ProgramAllowlist {
+            programs: vec![system_program::ID],
+        },
+    );
+    let rate_limit = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "RateLimit",
+        PolicyData::RateLimit {
+            window: WindowKind::Fixed { secs: 60 },
+            max: 3,
+            state: CounterState::default(),
+            scope: None,
+        },
+    );
+    let spend_cap = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "SpendCap",
+        PolicyData::SpendCap {
+            asset: Asset::NativeSol,
+            window: WindowKind::Fixed { secs: 60 },
+            max: 500_000,
+            state: SpendState::default(),
+        },
+    );
 
-    airdrop(&mut svm, &session_kp.pubkey(), session_airdrop);
+    let extras = transfer_tail(&[allowlist, rate_limit, spend_cap], s.delegate, recipient);
 
-    let (delegate, _) = derive_delegate_pda(&owner.pubkey(), &session_kp.pubkey());
-
-    let delegate_airdrop = 20_u64
-        .checked_mul(ONE_SOL)
-        .expect("delegate airdrop overflow");
-
-    airdrop(&mut svm, &delegate, delegate_airdrop);
-
-    let dest = Pubkey::new_unique();
-    airdrop(&mut svm, &dest, 1);
-
-    let p1_data = PolicyData::ProgramAllowlist {
-        programs: vec![anchor_lang::system_program::ID],
-    };
-    let (p1, _) = attach_policy(&mut svm, &owner, &session_pda, p1_data, &[]).expect("attach 1");
-
-    svm.expire_blockhash();
-    let p2_data = PolicyData::RateLimit {
-        window: WindowKind::Fixed { secs: 60 },
-        max: 3,
-        state: CounterState::default(),
-        scope: None,
-    };
-    let (p2, _) = attach_policy(&mut svm, &owner, &session_pda, p2_data, &[p1]).expect("attach 2");
-
-    svm.expire_blockhash();
-    let p3_data = PolicyData::SpendCap {
-        asset: Asset::NativeSol,
-        window: WindowKind::Fixed { secs: 60 },
-        max: 500_000,
-        state: SpendState::default(),
-    };
-    let (p3, _) =
-        attach_policy(&mut svm, &owner, &session_pda, p3_data, &[p1, p2]).expect("attach 3");
-
-    let mk_extras = |policies: Vec<Pubkey>| -> Vec<AccountMeta> {
-        let mut v: Vec<AccountMeta> = policies
-            .into_iter()
-            .map(|p| AccountMeta::new(p, false))
-            .collect();
-        v.push(AccountMeta::new(delegate, false));
-        v.push(AccountMeta::new(delegate, false));
-        v.push(AccountMeta::new(dest, false));
-        v.push(AccountMeta::new_readonly(
-            anchor_lang::system_program::ID,
-            false,
-        ));
-        v
-    };
-
-    for i in 0..3 {
-        svm.expire_blockhash();
-        execute(
-            &mut svm,
-            &session_kp,
-            &session_pda,
-            transfer_wrapped_ix(100_000),
-            3,
-            &mk_extras(vec![p1, p2, p3]),
-        )
-        .unwrap_or_else(|e| panic!("transfer {} should pass: {:?}", i, e.err));
+    md.step("Three transfers of 100_000: all within rate limit (max 3) and cap");
+    for _ in 0..3 {
+        ctx.svm.expire_blockhash();
+        ctx.tx(&[&session_kp])
+            .build(
+                s.bundle,
+                bastion::instruction::Execute {
+                    wrapped_ixs: vec![transfer_wrapped(100_000)],
+                    policy_count: 3,
+                    expected_nonce: None,
+                    manifest: None,
+                },
+            )
+            .remaining_accounts(&extras)
+            .send_ok();
     }
 
-    svm.expire_blockhash();
-    let res = execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(100_000),
-        3,
-        &mk_extras(vec![p1, p2, p3]),
+    md.step("Fourth transfer in the same window: rejected with RateLimitExceeded");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(100_000)],
+                policy_count: 3,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_err_named("RateLimitExceeded");
+
+    md.step("Advance the clock 65s: the rate-limit and spend windows reset");
+    ctx.svm.advance_seconds(65);
+
+    md.step("A 600_000 transfer in the fresh window: over the 500_000 cap, SpendCapExceeded");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(600_000)],
+                policy_count: 3,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_err_named("SpendCapExceeded");
+
+    md.step("A 50_000 transfer within the reset cap: passes");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            s.bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(50_000)],
+                policy_count: 3,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_ok();
+
+    md.check(
+        "recipient received the 3 allowed transfers plus the final 50_000",
+        Some(ONE_SOL + 3 * 100_000 + 50_000),
+        ctx.svm.get_balance(&recipient),
     );
-
-    assert_svm_anchor_error(res, BastionError::RateLimitExceeded);
-
-    advance_clock(&mut svm, 65);
-    svm.expire_blockhash();
-
-    let res = execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(600_000),
-        3,
-        &mk_extras(vec![p1, p2, p3]),
-    );
-
-    assert_svm_anchor_error(res, BastionError::SpendCapExceeded);
-
-    svm.expire_blockhash();
-    execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(50_000),
-        3,
-        &mk_extras(vec![p1, p2, p3]),
-    )
-    .expect("transfer within reset cap should pass");
+    ctx.report_execution(&mut md);
 }

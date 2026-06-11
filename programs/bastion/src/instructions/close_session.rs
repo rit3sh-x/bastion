@@ -6,6 +6,11 @@ use crate::state::policy::Policy;
 use crate::state::session::Session;
 use crate::utils::hash::compute_policies_hash;
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 pub struct CloseSession<'info> {
     #[account(mut)]

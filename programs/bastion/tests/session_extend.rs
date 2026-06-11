@@ -1,153 +1,300 @@
 mod helpers;
 
-use crate::helpers::*;
+use anchor_litesvm::{AnchorContext, Pubkey, Report, TestHelpers};
+use bastion::state::session::Session;
+use helpers::*;
+use solana_keypair::Keypair;
+use solana_signer::Signer;
+
+/// Open a session at `TEST_CLOCK_TS + expiry_offset` and hand back its initial
+/// expiry. Every test starts here, so the offset is the only knob.
+fn open_session(
+    ctx: &mut AnchorContext,
+    owner: &Keypair,
+    session_kp: &Keypair,
+    s: &SessionCast,
+    expiry: i64,
+) {
+    ctx.tx(&[owner])
+        .build(
+            s.bundle,
+            bastion::instruction::InitSession {
+                args: bastion::InitSessionArgs {
+                    session_key: session_kp.pubkey(),
+                    expiry,
+                },
+            },
+        )
+        .send_ok();
+}
+
+fn fetch_session(ctx: &AnchorContext, session: &Pubkey) -> Session {
+    ctx.get_account::<Session>(session).expect("deser Session")
+}
 
 #[test]
 fn extend_session_advances_expiry() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: extend advances a live session's expiry",
+        "An owner opens a session, then extends it to a later expiry. The new \
+         value sticks; every other field of the session is untouched.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
 
-    let pre = fetch_session(&svm, &session_pda);
+    md.step("Open the session (expiry = clock + 3600)");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
+
+    let pre = fetch_session(&ctx, &s.session);
     let new_expiry = pre.expiry.checked_add(7200).expect("no overflow");
 
-    extend_session(&mut svm, &owner, &session_pda, new_expiry).expect("extend ok");
+    md.step("Extend to a later expiry (+7200)");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry },
+            },
+        )
+        .send_ok();
 
-    let post = fetch_session(&svm, &session_pda);
-    assert_eq!(post.expiry, new_expiry, "expiry advanced to new value");
-
-    assert_eq!(post.owner, pre.owner);
-    assert_eq!(post.session_key, pre.session_key);
-    assert_eq!(post.created_at, pre.created_at);
-    assert_eq!(post.revoked, pre.revoked);
-    assert_eq!(post.policy_count, pre.policy_count);
-    assert_eq!(post.policies_hash, pre.policies_hash);
+    let post = fetch_session(&ctx, &s.session);
+    md.check("expiry advanced to new value", new_expiry, post.expiry);
+    md.check("owner unchanged", pre.owner, post.owner);
+    md.check("session_key unchanged", pre.session_key, post.session_key);
+    md.check("created_at unchanged", pre.created_at, post.created_at);
+    md.check("revoked unchanged", pre.revoked, post.revoked);
+    md.check(
+        "policy_count unchanged",
+        pre.policy_count,
+        post.policy_count,
+    );
+    md.check(
+        "policies_hash unchanged",
+        pre.policies_hash,
+        post.policies_hash,
+    );
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_rejects_revoked() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: extend rejects a revoked session",
+        "A revoked session is dead; extend must refuse it with SessionRevoked.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
 
-    revoke_session(&mut svm, &owner, &session_pda).expect("revoke");
-    svm.expire_blockhash();
+    md.step("Open the session");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
 
-    let pre = fetch_session(&svm, &session_pda);
+    md.step("Revoke it");
+    ctx.tx(&[&owner])
+        .build(s.bundle, bastion::instruction::RevokeSession {})
+        .send_ok();
+    ctx.svm.expire_blockhash();
+
+    let pre = fetch_session(&ctx, &s.session);
     let new_expiry = pre.expiry.checked_add(7200).expect("no overflow");
 
-    let err = extend_session(&mut svm, &owner, &session_pda, new_expiry)
-        .expect_err("extend on revoked session must fail");
-    let logs = err.meta.logs.join("\n");
-    assert!(
-        logs.contains("SessionRevoked"),
-        "expected SessionRevoked; got:\n{}",
-        logs
-    );
+    md.step("Extend a revoked session: SessionRevoked");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry },
+            },
+        )
+        .send_err_named("SessionRevoked");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_rejects_already_expired() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: extend rejects an already-expired session",
+        "Once the clock passes a session's expiry, extend can't resurrect it; it \
+         fails with SessionExpired.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
 
-    advance_clock(&mut svm, 3601);
-    svm.expire_blockhash();
+    md.step("Open the session (expiry = clock + 3600)");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
 
-    let pre = fetch_session(&svm, &session_pda);
+    md.step("Advance the clock past expiry (+3601)");
+    ctx.svm.advance_seconds(3601);
+    ctx.svm.expire_blockhash();
+
+    let pre = fetch_session(&ctx, &s.session);
     let new_expiry = pre.expiry.checked_add(7200).expect("no overflow");
 
-    let err = extend_session(&mut svm, &owner, &session_pda, new_expiry)
-        .expect_err("extend on expired session must fail");
-    let logs = err.meta.logs.join("\n");
-    assert!(
-        logs.contains("SessionExpired"),
-        "expected SessionExpired; got:\n{}",
-        logs
-    );
+    md.step("Extend an expired session: SessionExpired");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry },
+            },
+        )
+        .send_err_named("SessionExpired");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_rejects_non_monotonic() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: extend must move expiry forward",
+        "Shrinking the expiry is rejected (NewExpiryNotGreater) and leaves the \
+         stored expiry unchanged.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
 
-    let pre = fetch_session(&svm, &session_pda);
+    md.step("Open the session");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
 
+    let pre = fetch_session(&ctx, &s.session);
     let shrunk = pre.expiry.checked_sub(60).expect("no underflow");
 
-    let err = extend_session(&mut svm, &owner, &session_pda, shrunk)
-        .expect_err("shrinking expiry must fail");
-    let logs = err.meta.logs.join("\n");
-    assert!(
-        logs.contains("NewExpiryNotGreater"),
-        "expected NewExpiryNotGreater; got:\n{}",
-        logs
-    );
+    md.step("Extend to an earlier expiry (-60): NewExpiryNotGreater");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry: shrunk },
+            },
+        )
+        .send_err_named("NewExpiryNotGreater");
 
-    let post = fetch_session(&svm, &session_pda);
-    assert_eq!(post.expiry, pre.expiry, "expiry unchanged on rejection");
+    let post = fetch_session(&ctx, &s.session);
+    md.check("expiry unchanged on rejection", pre.expiry, post.expiry);
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_rejects_equal_expiry() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
-
-    let pre = fetch_session(&svm, &session_pda);
-
-    let err = extend_session(&mut svm, &owner, &session_pda, pre.expiry)
-        .expect_err("equal expiry must fail (strict greater)");
-    let logs = err.meta.logs.join("\n");
-    assert!(
-        logs.contains("NewExpiryNotGreater"),
-        "expected NewExpiryNotGreater; got:\n{}",
-        logs
+    let mut md = Report::new(
+        "Bastion: extend is strictly greater, equal is rejected",
+        "Extending to the exact same expiry is not forward progress; the guard is \
+         strict-greater, so it fails with NewExpiryNotGreater.",
     );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
+
+    md.step("Open the session");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
+
+    let pre = fetch_session(&ctx, &s.session);
+
+    md.step("Extend to the same expiry: NewExpiryNotGreater");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs {
+                    new_expiry: pre.expiry,
+                },
+            },
+        )
+        .send_err_named("NewExpiryNotGreater");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_rejects_non_owner() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: only the owner can extend",
+        "An attacker signs an extend against the owner's session. The seeds are \
+         derived from the signer's key, so the PDA no longer matches and the \
+         constraint fails. The stored expiry is untouched.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
+    let attacker = ctx.cast_actor("attacker");
 
-    let attacker = solana_keypair::Keypair::new();
-    airdrop(&mut svm, &solana_signer::Signer::pubkey(&attacker), ONE_SOL);
+    md.step("Open the session (real owner)");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
 
-    let pre = fetch_session(&svm, &session_pda);
+    let pre = fetch_session(&ctx, &s.session);
     let new_expiry = pre.expiry.checked_add(7200).expect("no overflow");
 
-    let ix = extend_session_ix(
-        &solana_signer::Signer::pubkey(&attacker),
-        &session_pda,
-        new_expiry,
-    );
-    let err = send_ix(&mut svm, ix, &[&attacker]).expect_err("non-owner extend must fail");
-    let logs = err.meta.logs.join("\n");
+    // Same session account, but the attacker in the owner slot: the seeds
+    // constraint re-derives the PDA from the attacker's key, so it mismatches.
+    let mut bundle = s.bundle;
+    bundle.owner = attacker.pubkey();
+    bundle.session = s.session;
 
-    assert!(
-        logs.contains("ConstraintSeeds")
-            || logs.contains("0x7d6")
-            || logs.contains("ConstraintHasOne"),
-        "expected seeds/has_one violation; got:\n{}",
-        logs
-    );
+    md.step("Attacker signs extend against the owner's session: seeds violation");
+    ctx.tx(&[&attacker])
+        .build(
+            bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry },
+            },
+        )
+        .send_err();
 
-    let post = fetch_session(&svm, &session_pda);
-    assert_eq!(post.expiry, pre.expiry, "expiry unchanged on rejection");
+    let post = fetch_session(&ctx, &s.session);
+    md.check("expiry unchanged on rejection", pre.expiry, post.expiry);
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn extend_session_can_be_chained() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 3600).expect("init");
+    let mut md = Report::new(
+        "Bastion: extends chain",
+        "Two extends in a row each move expiry forward; the final value is the \
+         last one written.",
+    );
+    let mut ctx = bastion_ctx();
+    let owner = ctx.cast_actor("owner");
+    let session_kp = ctx.cast_actor("session-signer");
+    let s = cast_session(&mut ctx, &owner, &session_kp);
 
-    let pre = fetch_session(&svm, &session_pda);
+    md.step("Open the session");
+    open_session(&mut ctx, &owner, &session_kp, &s, TEST_CLOCK_TS + 3600);
+
+    let pre = fetch_session(&ctx, &s.session);
     let e1 = pre.expiry.checked_add(3600).expect("no overflow");
-    extend_session(&mut svm, &owner, &session_pda, e1).expect("first extend");
 
-    svm.expire_blockhash();
+    md.step("First extend (+3600)");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry: e1 },
+            },
+        )
+        .send_ok();
+
+    ctx.svm.expire_blockhash();
     let e2 = e1.checked_add(3600).expect("no overflow");
-    extend_session(&mut svm, &owner, &session_pda, e2).expect("second extend");
 
-    let post = fetch_session(&svm, &session_pda);
-    assert_eq!(post.expiry, e2);
+    md.step("Second extend (+3600 again)");
+    ctx.tx(&[&owner])
+        .build(
+            s.bundle,
+            bastion::instruction::ExtendSession {
+                args: bastion::ExtendSessionArgs { new_expiry: e2 },
+            },
+        )
+        .send_ok();
+
+    let post = fetch_session(&ctx, &s.session);
+    md.check("expiry is the last value written", e2, post.expiry);
+    ctx.report_execution(&mut md);
 }

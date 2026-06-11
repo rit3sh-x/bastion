@@ -12,3 +12,4 @@ dist
 generated
 .env
 .env.local
+coverage

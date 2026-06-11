@@ -5,6 +5,11 @@ use crate::constants::{SEED_DELEGATE, SEED_SESSION};
 use crate::error::BastionError;
 use crate::state::session::Session;
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 pub struct SweepDelegate<'info> {
     #[account(mut)]

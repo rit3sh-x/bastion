@@ -5,6 +5,11 @@ use crate::error::BastionError;
 use crate::state::policy::{Policy, PolicyData};
 use crate::state::session::Session;
 
+#[cfg_attr(
+    not(target_os = "solana"),
+    derive(anchor_litesvm::BundledPubkeys),
+    bundled_with(crate::utils::helpers::BastionBundle)
+)]
 #[derive(Accounts)]
 #[instruction(seed: u64, new_data: PolicyData)]
 pub struct UpdatePolicy<'info> {

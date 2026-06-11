@@ -1,197 +1,336 @@
 mod helpers;
 
-use anchor_lang::prelude::Pubkey;
-use bastion::error::BastionError;
+use anchor_litesvm::{Lazy, Pubkey, Report};
 use bastion::state::counter::{CounterState, SpendState};
-use bastion::state::policy::{Asset, PolicyData, WindowKind};
-
-use crate::helpers::*;
+use bastion::state::policy::{Asset, Policy, PolicyData, WindowKind};
+use bastion::utils::helpers::BastionSeed;
+use helpers::*;
 
 #[test]
 fn update_policy_replaces_data_in_place() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _session_kp) = init_session(&mut svm, &owner, 86_400).expect("init");
+    let mut md = Report::new(
+        "Bastion: UpdatePolicy replaces a policy's data in place",
+        "Attach a ProgramAllowlist of one program, then update it to a three-program \
+         allowlist targeting the known seed via PolicyAt(session, 0). The same kind, \
+         new data: the policy account is rewritten, not recreated.",
+    );
+    let (mut ctx, owner, _session_kp, s) = bootstrap(ONE_SOL);
+    let mut bundle = s.bundle;
 
-    let initial = PolicyData::ProgramAllowlist {
-        programs: vec![Pubkey::new_unique()],
-    };
-    let (p0, seed) = attach_policy(&mut svm, &owner, &session_pda, initial, &[]).expect("attach");
+    md.step("Attach a ProgramAllowlist of one program");
+    let policy = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "ProgramAllowlist",
+        PolicyData::ProgramAllowlist {
+            programs: vec![Pubkey::new_unique()],
+        },
+    );
 
     let new_progs = vec![
         Pubkey::new_unique(),
         Pubkey::new_unique(),
         Pubkey::new_unique(),
     ];
-    let new_data = PolicyData::ProgramAllowlist {
-        programs: new_progs.clone(),
-    };
 
-    svm.expire_blockhash();
-    update_policy(&mut svm, &owner, &session_pda, &p0, seed, new_data).expect("update ok");
+    md.step("Update in place to a three-program allowlist (PolicyAt seed 0)");
+    ctx.svm.expire_blockhash();
+    bundle.policy = Lazy::Deferred(BastionSeed::PolicyAt(s.session, 0));
+    ctx.tx(&[&owner])
+        .build(
+            bundle,
+            bastion::instruction::UpdatePolicy {
+                seed: 0,
+                new_data: PolicyData::ProgramAllowlist {
+                    programs: new_progs.clone(),
+                },
+            },
+        )
+        .send_ok();
 
-    let policy = fetch_policy(&svm, &p0);
-    match policy.data {
-        PolicyData::ProgramAllowlist { programs } => assert_eq!(programs, new_progs),
+    let pol: Policy = ctx.get_account(&policy).unwrap();
+    match pol.data {
+        PolicyData::ProgramAllowlist { programs } => {
+            md.check("allowlist replaced in place", new_progs, programs);
+        }
         _ => panic!("kind changed"),
     }
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn update_policy_rejects_kind_change() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 86_400).expect("init");
+    let mut md = Report::new(
+        "Bastion: UpdatePolicy rejects changing the policy kind",
+        "Attach a ProgramAllowlist, then try to update it into an Expiry policy. \
+         A policy's kind is fixed at attach; switching kinds is rejected with \
+         PolicyKindMismatch.",
+    );
+    let (mut ctx, owner, _session_kp, s) = bootstrap(ONE_SOL);
+    let mut bundle = s.bundle;
 
-    let initial = PolicyData::ProgramAllowlist {
-        programs: vec![Pubkey::new_unique()],
-    };
-    let (p0, seed) = attach_policy(&mut svm, &owner, &session_pda, initial, &[]).expect("attach");
+    md.step("Attach a ProgramAllowlist");
+    attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "ProgramAllowlist",
+        PolicyData::ProgramAllowlist {
+            programs: vec![Pubkey::new_unique()],
+        },
+    );
 
-    let wrong_kind = PolicyData::Expiry {
-        not_after: now(&svm).checked_add(1000).expect("not_after overflow"),
-    };
-    svm.expire_blockhash();
-    let res = update_policy(&mut svm, &owner, &session_pda, &p0, seed, wrong_kind);
-    assert_svm_anchor_error(res, BastionError::PolicyKindMismatch);
+    md.step("Update into a different kind (Expiry): rejected with PolicyKindMismatch");
+    ctx.svm.expire_blockhash();
+    bundle.policy = Lazy::Deferred(BastionSeed::PolicyAt(s.session, 0));
+    ctx.tx(&[&owner])
+        .build(
+            bundle,
+            bastion::instruction::UpdatePolicy {
+                seed: 0,
+                new_data: PolicyData::Expiry {
+                    not_after: TEST_CLOCK_TS + 1000,
+                },
+            },
+        )
+        .send_err_named("PolicyKindMismatch");
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn update_policy_swaps_window_kind_within_same_policy_kind() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, _) = init_session(&mut svm, &owner, 86_400).expect("init");
+    let mut md = Report::new(
+        "Bastion: UpdatePolicy swaps the window within the same policy kind",
+        "Attach a SpendCap with a Fixed window and a 1_000_000 cap, then update it to a \
+         Rolling window with a 2_000_000 cap. The kind stays SpendCap, so the update is \
+         allowed: the window shape and max are both rewritten.",
+    );
+    let (mut ctx, owner, _session_kp, s) = bootstrap(ONE_SOL);
+    let mut bundle = s.bundle;
 
-    let initial = PolicyData::SpendCap {
-        asset: Asset::NativeSol,
-        window: WindowKind::Fixed { secs: 3_600 },
-        max: 1_000_000,
-        state: SpendState::default(),
-    };
-    let (p0, seed) = attach_policy(&mut svm, &owner, &session_pda, initial, &[]).expect("attach");
-
-    let swapped = PolicyData::SpendCap {
-        asset: Asset::NativeSol,
-        window: WindowKind::Rolling {
-            secs: 3_600,
-            slots: 4,
+    md.step("Attach a SpendCap: Fixed window, cap 1_000_000");
+    let policy = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "SpendCap",
+        PolicyData::SpendCap {
+            asset: Asset::NativeSol,
+            window: WindowKind::Fixed { secs: 3_600 },
+            max: 1_000_000,
+            state: SpendState::default(),
         },
-        max: 2_000_000,
-        state: SpendState::default(),
-    };
-    svm.expire_blockhash();
-    update_policy(&mut svm, &owner, &session_pda, &p0, seed, swapped).expect("window swap ok");
+    );
 
-    let pol = fetch_policy(&svm, &p0);
+    md.step("Update to a Rolling window, cap raised to 2_000_000 (PolicyAt seed 0)");
+    ctx.svm.expire_blockhash();
+    bundle.policy = Lazy::Deferred(BastionSeed::PolicyAt(s.session, 0));
+    ctx.tx(&[&owner])
+        .build(
+            bundle,
+            bastion::instruction::UpdatePolicy {
+                seed: 0,
+                new_data: PolicyData::SpendCap {
+                    asset: Asset::NativeSol,
+                    window: WindowKind::Rolling {
+                        secs: 3_600,
+                        slots: 4,
+                    },
+                    max: 2_000_000,
+                    state: SpendState::default(),
+                },
+            },
+        )
+        .send_ok();
+
+    let pol: Policy = ctx.get_account(&policy).unwrap();
     match pol.data {
         PolicyData::SpendCap { window, max, .. } => {
-            assert_eq!(max, 2_000_000, "max raised");
-            assert!(matches!(
-                window,
-                WindowKind::Rolling {
-                    secs: 3_600,
-                    slots: 4
-                }
-            ));
+            md.check("max raised", 2_000_000u64, max);
+            md.check(
+                "window swapped to Rolling { secs: 3_600, slots: 4 }",
+                true,
+                matches!(
+                    window,
+                    WindowKind::Rolling {
+                        secs: 3_600,
+                        slots: 4
+                    }
+                ),
+            );
         }
         _ => panic!("expected SpendCap after update"),
     }
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn update_resumes_rate_limit_count() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: UpdatePolicy resumes a RateLimit's live count across the update",
+        "Attach a RateLimit (max 3, fixed 60s) and execute twice so its counter reaches 2. \
+         Raising the cap to 5 via UpdatePolicy rewrites the policy data but resumes the live \
+         count: an update is not a reset, so the counter stays at 2.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
+    let mut bundle = s.bundle;
 
-    let data = PolicyData::RateLimit {
-        window: WindowKind::Fixed { secs: 60 },
-        max: 3,
-        state: CounterState::default(),
-        scope: None,
-    };
-    let (p0, seed) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
+    md.step("Attach a RateLimit (max 3 per fixed 60s window)");
+    let rate_limit = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "RateLimit",
+        PolicyData::RateLimit {
+            window: WindowKind::Fixed { secs: 60 },
+            max: 3,
+            state: CounterState::default(),
+            scope: None,
+        },
+    );
+    let extras = transfer_tail(&[rate_limit], s.delegate, recipient);
 
-    for i in 0..2 {
-        svm.expire_blockhash();
-        execute(
-            &mut svm,
-            &session_kp,
-            &session_pda,
-            transfer_wrapped_ix(1_000),
-            1,
-            &extras_sol_transfer_one_policy(&p0, &delegate, &dest),
-        )
-        .unwrap_or_else(|e| panic!("call {} should pass: {:?}", i, e.err));
+    md.step("Two executes inside the window: the counter advances to 2");
+    for _ in 0..2 {
+        ctx.svm.expire_blockhash();
+        ctx.tx(&[&session_kp])
+            .build(
+                bundle,
+                bastion::instruction::Execute {
+                    wrapped_ixs: vec![transfer_wrapped(1_000)],
+                    policy_count: 1,
+                    expected_nonce: None,
+                    manifest: None,
+                },
+            )
+            .remaining_accounts(&extras)
+            .send_ok();
     }
-    let mid = fetch_policy(&svm, &p0);
+    let mid: Policy = ctx.get_account(&rate_limit).unwrap();
     match mid.data {
-        PolicyData::RateLimit { state, .. } => assert_eq!(state.count, 2),
-        _ => panic!("expected RateLimit"),
-    }
-
-    svm.expire_blockhash();
-    let new_data = PolicyData::RateLimit {
-        window: WindowKind::Fixed { secs: 60 },
-        max: 5,
-        state: CounterState::default(),
-        scope: None,
-    };
-    update_policy(&mut svm, &owner, &session_pda, &p0, seed, new_data).expect("update");
-
-    let post = fetch_policy(&svm, &p0);
-    match post.data {
-        PolicyData::RateLimit { max, state, .. } => {
-            assert_eq!(max, 5, "cap raised");
-            assert_eq!(state.count, 2, "count resumed across update, not reset");
+        PolicyData::RateLimit { state, .. } => {
+            md.check("counter at 2 before the update", 2u32, state.count);
         }
         _ => panic!("expected RateLimit"),
     }
+
+    md.step("Raise the cap to 5 via UpdatePolicy (PolicyAt seed 0)");
+    ctx.svm.expire_blockhash();
+    bundle.policy = Lazy::Deferred(BastionSeed::PolicyAt(s.session, 0));
+    ctx.tx(&[&owner])
+        .build(
+            bundle,
+            bastion::instruction::UpdatePolicy {
+                seed: 0,
+                new_data: PolicyData::RateLimit {
+                    window: WindowKind::Fixed { secs: 60 },
+                    max: 5,
+                    state: CounterState::default(),
+                    scope: None,
+                },
+            },
+        )
+        .send_ok();
+
+    let post: Policy = ctx.get_account(&rate_limit).unwrap();
+    match post.data {
+        PolicyData::RateLimit { max, state, .. } => {
+            md.check("cap raised to 5", 5u32, max);
+            md.check(
+                "count resumed across the update, not reset",
+                2u32,
+                state.count,
+            );
+        }
+        _ => panic!("expected RateLimit"),
+    }
+    ctx.report_execution(&mut md);
 }
 
 #[test]
 fn update_resumes_spend_cap_spent() {
-    let (mut svm, owner) = setup_svm();
-    let (session_pda, session_kp, delegate, dest) = setup_funded_session(&mut svm, &owner);
+    let mut md = Report::new(
+        "Bastion: UpdatePolicy resumes a SpendCap's spent total across the update",
+        "Attach a SpendCap (cap 1_000_000, fixed window) and execute a 400_000 transfer so \
+         `spent` reaches 400_000. Raising the cap to 2_000_000 via UpdatePolicy rewrites the \
+         policy data but resumes the live total: spent stays 400_000, it is not zeroed.",
+    );
+    let (mut ctx, owner, session_kp, s) = bootstrap(ONE_SOL);
+    let recipient = ctx.cast_account("recipient");
+    let mut bundle = s.bundle;
 
-    let data = PolicyData::SpendCap {
-        asset: Asset::NativeSol,
-        window: WindowKind::Fixed { secs: 86_400 },
-        max: 1_000_000,
-        state: SpendState::default(),
-    };
-    let (p0, seed) = attach_policy(&mut svm, &owner, &session_pda, data, &[]).expect("attach");
+    md.step("Attach a SpendCap (cap 1_000_000, fixed 86_400s window)");
+    let spend_cap = attach(
+        &mut ctx,
+        &owner,
+        &s,
+        "SpendCap",
+        PolicyData::SpendCap {
+            asset: Asset::NativeSol,
+            window: WindowKind::Fixed { secs: 86_400 },
+            max: 1_000_000,
+            state: SpendState::default(),
+        },
+    );
+    let extras = transfer_tail(&[spend_cap], s.delegate, recipient);
 
-    svm.expire_blockhash();
-    execute(
-        &mut svm,
-        &session_kp,
-        &session_pda,
-        transfer_wrapped_ix(400_000),
-        1,
-        &extras_sol_transfer_one_policy(&p0, &delegate, &dest),
-    )
-    .expect("transfer within cap");
-    let mid = fetch_policy(&svm, &p0);
+    md.step("Execute a 400_000 transfer within the cap: the policy charges `spent`");
+    ctx.svm.expire_blockhash();
+    ctx.tx(&[&session_kp])
+        .build(
+            bundle,
+            bastion::instruction::Execute {
+                wrapped_ixs: vec![transfer_wrapped(400_000)],
+                policy_count: 1,
+                expected_nonce: None,
+                manifest: None,
+            },
+        )
+        .remaining_accounts(&extras)
+        .send_ok();
+    let mid: Policy = ctx.get_account(&spend_cap).unwrap();
     match mid.data {
-        PolicyData::SpendCap { state, .. } => assert_eq!(state.spent, 400_000),
-        _ => panic!("expected SpendCap"),
-    }
-
-    svm.expire_blockhash();
-    let new_data = PolicyData::SpendCap {
-        asset: Asset::NativeSol,
-        window: WindowKind::Fixed { secs: 86_400 },
-        max: 2_000_000,
-        state: SpendState::default(),
-    };
-    update_policy(&mut svm, &owner, &session_pda, &p0, seed, new_data).expect("update");
-
-    let post = fetch_policy(&svm, &p0);
-    match post.data {
-        PolicyData::SpendCap { max, state, .. } => {
-            assert_eq!(max, 2_000_000, "cap raised");
-            assert_eq!(
-                state.spent, 400_000,
-                "spent resumed across update, not reset"
+        PolicyData::SpendCap { state, .. } => {
+            md.check(
+                "spent at 400_000 before the update",
+                400_000u64,
+                state.spent,
             );
         }
         _ => panic!("expected SpendCap"),
     }
+
+    md.step("Raise the cap to 2_000_000 via UpdatePolicy (PolicyAt seed 0)");
+    ctx.svm.expire_blockhash();
+    bundle.policy = Lazy::Deferred(BastionSeed::PolicyAt(s.session, 0));
+    ctx.tx(&[&owner])
+        .build(
+            bundle,
+            bastion::instruction::UpdatePolicy {
+                seed: 0,
+                new_data: PolicyData::SpendCap {
+                    asset: Asset::NativeSol,
+                    window: WindowKind::Fixed { secs: 86_400 },
+                    max: 2_000_000,
+                    state: SpendState::default(),
+                },
+            },
+        )
+        .send_ok();
+
+    let post: Policy = ctx.get_account(&spend_cap).unwrap();
+    match post.data {
+        PolicyData::SpendCap { max, state, .. } => {
+            md.check("cap raised to 2_000_000", 2_000_000u64, max);
+            md.check(
+                "spent resumed across the update, not reset",
+                400_000u64,
+                state.spent,
+            );
+        }
+        _ => panic!("expected SpendCap"),
+    }
+    ctx.report_execution(&mut md);
 }
