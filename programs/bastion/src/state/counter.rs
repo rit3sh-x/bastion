@@ -21,8 +21,30 @@ impl Default for CounterState {
 }
 
 impl CounterState {
+    /// Re-express the live count when an `update_policy` switches the window
+    /// shape Fixed -> Rolling. Fixed keeps the live total in `count`; Rolling
+    /// reads `sum(ring)`. Seed the current (last) bucket with `count` so the
+    /// reshape cannot resurrect an exhausted limit. No-op if the state is
+    /// empty.
+    pub fn seed_ring_from_count(&mut self, slots: u8) {
+        let live = self.count;
+        self.ring = [0; MAX_RING_SLOTS];
+        let last = usize::from(slots).min(MAX_RING_SLOTS).saturating_sub(1);
+        if let Some(cell) = self.ring.get_mut(last) {
+            *cell = live;
+        }
+    }
+
+    /// Re-express the live count when an `update_policy` switches Rolling ->
+    /// Fixed. Rolling already mirrors `sum(ring)` into `count`; recompute it
+    /// defensively so Fixed's `count`-based enforcer sees the consumed budget.
+    pub fn collapse_ring_to_count(&mut self) {
+        self.count = self.ring.iter().copied().fold(0u32, u32::saturating_add);
+    }
+
     /// Fixed window. Returns `Ok` after recording one event; mutates state.
-    /// `secs` MUST be > 0 (validated in PolicyData::invariant at attach time).
+    /// `secs` MUST be > 0 (validated in PolicyData::validate_attach_params at
+    /// attach time).
     pub fn charge_fixed(&mut self, now: i64, max: u32, secs: u32) -> Result<()> {
         require!(max >= 1, BastionError::InvalidWindow);
         let elapsed = now.saturating_sub(self.last_reset);
@@ -149,6 +171,22 @@ impl Default for SpendState {
 }
 
 impl SpendState {
+    /// Fixed -> Rolling reshape: seed the current bucket with `spent` so the
+    /// rolling `sum(ring)` enforcer sees the already-consumed spend.
+    pub fn seed_ring_from_spent(&mut self, slots: u8) {
+        let live = self.spent;
+        self.ring = [0; MAX_RING_SLOTS];
+        let last = usize::from(slots).min(MAX_RING_SLOTS).saturating_sub(1);
+        if let Some(cell) = self.ring.get_mut(last) {
+            *cell = live;
+        }
+    }
+
+    /// Rolling -> Fixed reshape: collapse `sum(ring)` into `spent`.
+    pub fn collapse_ring_to_spent(&mut self) {
+        self.spent = self.ring.iter().copied().fold(0u64, u64::saturating_add);
+    }
+
     pub fn charge_fixed(&mut self, now: i64, amount: u64, max: u64, secs: u32) -> Result<()> {
         let elapsed = now.saturating_sub(self.last_reset);
         if elapsed >= i64::from(secs) {

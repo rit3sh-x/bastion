@@ -15,8 +15,11 @@ use crate::utils::nft::{is_nft_mint, parse_verified_creators};
 pub fn check_nft_creator_allowlist(creators: &[Pubkey], ix_accounts: &[AccountInfo]) -> Result<()> {
     let mut seen: Vec<Pubkey> = Vec::new();
     for ai in ix_accounts {
+        // `>=` (not `==`) Mint::LEN: a Token-2022 mint with an extension exceeds
+        // the 82-byte base, so an exact-length filter fails open. is_nft_mint
+        // validates the base mint; token accounts (len 165) fail it.
         if (ai.owner == &spl_token_id() || ai.owner == &spl_token_2022_id())
-            && ai.data_len() == spl_token_interface::state::Mint::LEN
+            && ai.data_len() >= spl_token_interface::state::Mint::LEN
             && is_nft_mint(ai).unwrap_or(false)
             && !seen.contains(ai.key)
         {
@@ -342,6 +345,63 @@ mod tests {
         let mut lam_m = 0u64;
         let mut lam_meta = 0u64;
         let mut mint_data = pack_nft_mint();
+
+        let mint_ai = make_account_info(&mint_key, &t22, &mut lam_m, &mut mint_data);
+        let meta_ai = make_account_info(&meta_key, &mpl, &mut lam_meta, &mut meta_data);
+
+        assert!(check_nft_creator_allowlist(&creators, &[mint_ai, meta_ai]).is_ok());
+    }
+
+    #[test]
+    fn rejects_token_2022_nft_with_extension_when_creator_not_allowed() {
+        // V3 fail-closed guard (the security-meaningful direction): a T22 NFT
+        // mint WITH an extension whose metadata names an off-list creator must be
+        // discovered and REJECTED. Under the old `== Mint::LEN` filter the mint
+        // was skipped, the loop ran empty, and the allowlist passed (fail-open).
+        let mint_key = Pubkey::new_unique();
+        let listed = Pubkey::new_unique();
+        let off_list = Pubkey::new_unique();
+        let mut creators = vec![listed];
+        creators.sort();
+
+        let meta_key = metadata_pda(&mint_key);
+        let mut meta_data = build_metadata(Some(vec![pack_creator(&off_list, true, 100)]));
+
+        let t22 = spl_token_2022_id();
+        let mpl = MPL_TOKEN_METADATA_ID;
+        let mut lam_m = 0u64;
+        let mut lam_meta = 0u64;
+        let mut mint_data = pack_nft_mint().to_vec();
+        mint_data.resize(165, 0);
+
+        let mint_ai = make_account_info(&mint_key, &t22, &mut lam_m, &mut mint_data);
+        let meta_ai = make_account_info(&meta_key, &mpl, &mut lam_meta, &mut meta_data);
+
+        assert!(check_nft_creator_allowlist(&creators, &[mint_ai, meta_ai]).is_err());
+    }
+
+    #[test]
+    fn accepts_token_2022_nft_with_extension() {
+        // V3 symmetric to nft_collection's discovery test: a Token-2022 NFT mint
+        // carrying an extension (data_len > Mint::LEN) must still be discovered
+        // by the `>=` filter, then accepted when its verified creator is on the
+        // allowlist. (The old `== Mint::LEN` filter skipped it entirely.)
+        let mint_key = Pubkey::new_unique();
+        let creator = Pubkey::new_unique();
+        let mut creators = vec![creator];
+        creators.sort();
+
+        let meta_key = metadata_pda(&mint_key);
+        let mut meta_data = build_metadata(Some(vec![pack_creator(&creator, true, 100)]));
+
+        let t22 = spl_token_2022_id();
+        let mpl = MPL_TOKEN_METADATA_ID;
+        let mut lam_m = 0u64;
+        let mut lam_meta = 0u64;
+        // 82-byte valid NFT mint base + trailing bytes standing in for a TLV
+        // extension (data_len = 165 > Mint::LEN).
+        let mut mint_data = pack_nft_mint().to_vec();
+        mint_data.resize(165, 0);
 
         let mint_ai = make_account_info(&mint_key, &t22, &mut lam_m, &mut mint_data);
         let meta_ai = make_account_info(&meta_key, &mpl, &mut lam_meta, &mut meta_data);
