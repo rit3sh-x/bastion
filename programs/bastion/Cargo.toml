@@ -5,7 +5,7 @@ description = "Policy layer over transaction instructions."
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib", "lib"]
+crate-type = ["cdylib", "rlib"]
 name = "bastion"
 
 [features]

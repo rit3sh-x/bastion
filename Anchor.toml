@@ -1,21 +1,21 @@
 [toolchain]
-anchor_version = "1.0.2"
+anchor_version  = "1.0.2"
 package_manager = "pnpm"
 
 [features]
 resolution = true
-skip-lint = false
+skip-lint  = false
 
-[programs.localnet]
-bastion = "GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1"
+[programs]
+localnet = { bastion = "GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1" }
+devnet   = { bastion = "GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1" }
 
 [provider]
-cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+cluster = "devnet"
+wallet  = "~/.config/solana/id.json"
 
 [scripts]
-testsvm = "cargo test -p bastion --tests"
-testunit = "cargo test -p bastion --lib"
-testall = "cargo test -p bastion"
-
-[hooks]
+testsvm     = "cargo test -p bastion --tests"
+testunit    = "cargo test -p bastion --lib"
+testall     = "cargo test -p bastion"
+"build-sbf" = "cargo-build-sbf --arch v3 --tools-version v1.54 --manifest-path programs/bastion/Cargo.toml"
