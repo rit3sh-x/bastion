@@ -8,9 +8,7 @@ import {
     type Commitment,
     type Instruction,
     type ProgramDerivedAddress,
-    type RpcSubscriptions,
     type Signature,
-    type SolanaRpcSubscriptionsApi,
     type TransactionSigner,
 } from "@solana/kit";
 import {
@@ -37,6 +35,7 @@ import {
     SEED_SESSION,
 } from "./generated";
 import type { ResolvedBastionConfig } from "./config";
+import type { BastionRpcSubscriptions } from "./config";
 import {
     buildCreateLookupTableInstruction,
     buildExtendLookupTableInstruction,
@@ -173,7 +172,7 @@ export interface SessionHandle {
 
 interface SessionHandleArgs {
     config: ResolvedBastionConfig;
-    rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+    rpcSubscriptions: BastionRpcSubscriptions;
     pubkey: Address;
     sessionKey: SessionSigner;
     logger: Logger;
@@ -647,10 +646,10 @@ export interface BastionSessionManager {
 
 export function createSessionManager(
     config: ResolvedBastionConfig,
-    rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> | undefined,
+    rpcSubscriptions: BastionRpcSubscriptions | undefined,
     logger: Logger
 ): BastionSessionManager {
-    const requireSubs = (): RpcSubscriptions<SolanaRpcSubscriptionsApi> => {
+    const requireSubs = (): BastionRpcSubscriptions => {
         if (!rpcSubscriptions) {
             throw new Error(
                 "rpcSubscriptions required: pass `url`/`wsUrl` or `rpcSubscriptions` to createBastion"

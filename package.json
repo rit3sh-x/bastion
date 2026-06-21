@@ -7,6 +7,7 @@
         "lint": "turbo lint",
         "typecheck": "turbo typecheck",
         "test": "turbo test",
+        "test:devnet": "pnpm -F tests run test:devnet",
         "codegen": "pnpm -F bastion codegen",
         "format": "prettier --write .",
         "postinstall": "pnpm codegen"

@@ -1,15 +1,10 @@
-import {
-    createSolanaRpc,
-    createSolanaRpcSubscriptions,
-    type Rpc,
-    type RpcSubscriptions,
-    type SolanaRpcApi,
-    type SolanaRpcSubscriptionsApi,
-} from "@solana/kit";
+import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import {
     validateConfig,
     type BastionConfig,
     type BastionHookKey,
+    type BastionRpc,
+    type BastionRpcSubscriptions,
     type ResolvedBastionConfig,
 } from "./config";
 import { BastionSdkError } from "./errors";
@@ -29,7 +24,7 @@ export interface Bastion {
 }
 
 export interface CreateBastionConfigFull extends BastionConfig {
-    rpcSubscriptions?: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+    rpcSubscriptions?: BastionRpcSubscriptions;
 }
 
 export interface CreateBastionConfigByUrl extends Omit<BastionConfig, "rpc"> {
@@ -92,15 +87,15 @@ export function createBastion(config: CreateBastionConfig): Bastion {
 }
 
 function resolveTransports(config: CreateBastionConfig): {
-    rpc: Rpc<SolanaRpcApi>;
-    rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi> | undefined;
+    rpc: BastionRpc;
+    rpcSubscriptions: BastionRpcSubscriptions | undefined;
     base: BastionConfig;
 } {
     if ("url" in config) {
         const wsUrl = config.wsUrl ?? deriveWsUrl(config.url);
         const { url: _url, wsUrl: _ws, ...rest } = config;
         return {
-            rpc: createSolanaRpc(config.url) as unknown as Rpc<SolanaRpcApi>,
+            rpc: createSolanaRpc(config.url),
             rpcSubscriptions: createSolanaRpcSubscriptions(wsUrl),
             base: rest as BastionConfig,
         };

@@ -1,0 +1,23 @@
+{
+    "name": "tests",
+    "private": true,
+    "type": "module",
+    "version": "0.0.0",
+    "description": "Bastion devnet end-to-end tests",
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "test:watch": "vitest src",
+        "test:devnet": "BASTION_DEVNET_E2E=1 vitest run src"
+    },
+    "dependencies": {
+        "@solana/kit": "^6.9.0",
+        "@solana/program-client-core": "^6.4.0",
+        "bastion": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^25.9.1",
+        "@workspace/typescript-config": "workspace:*",
+        "typescript": "^6.0.0",
+        "vitest": "^4.1.0"
+    }
+}

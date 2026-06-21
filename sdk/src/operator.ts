@@ -8,11 +8,7 @@ import {
     type Address,
     type Commitment,
     type Instruction,
-    type Rpc,
-    type RpcSubscriptions,
     type Signature,
-    type SolanaRpcApi,
-    type SolanaRpcSubscriptionsApi,
     type TransactionSigner,
 } from "@solana/kit";
 import {
@@ -23,6 +19,7 @@ import {
     type Policy,
     type Session,
 } from "./generated";
+import type { BastionRpc, BastionRpcSubscriptions } from "./config";
 import {
     planExecution,
     sendTx,
@@ -127,8 +124,8 @@ export interface OperatorClient {
 }
 
 export interface CreateOperatorClientOptions {
-    rpc?: Rpc<SolanaRpcApi>;
-    rpcSubscriptions?: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+    rpc?: BastionRpc;
+    rpcSubscriptions?: BastionRpcSubscriptions;
     commitment?: Commitment;
 }
 
@@ -151,14 +148,10 @@ export async function createOperatorClient(
         ? fetchAddressesForLookupTables([cred.lookupTable], rpc)
         : null;
 
-    const staticPolicies =
-        cred.policies && cred.policies.length > 0 ? cred.policies : null;
-
     const resolvePolicyAddresses = async (
         override?: readonly Address[]
     ): Promise<readonly Address[]> => {
         if (override) return override;
-        if (staticPolicies) return staticPolicies;
 
         const session = await fetchSession(rpc, sessionPda);
         const nextSeed = Number(session.data.nextSeed);

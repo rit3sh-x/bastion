@@ -233,5 +233,4 @@ jobs:
 
                   RPC_URL=http://127.0.0.1:8899 \
                   WS_URL=ws://127.0.0.1:8900 \
-                  PROGRAM_ID=$PROGRAM_ID \
-                  pnpm -F @examples/bot exec tsx scripts/e2e-live.ts
+                  pnpm -F @examples/bot run demo:e2e
