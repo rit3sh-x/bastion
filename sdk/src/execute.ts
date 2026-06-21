@@ -305,7 +305,7 @@ export async function sendTx(args: SendArgs): Promise<Signature> {
         const sendConfig = {
             rpc: args.rpc,
             rpcSubscriptions: args.rpcSubscriptions,
-        } as unknown as Parameters<typeof sendAndConfirmTransactionFactory>[0];
+        } as Parameters<typeof sendAndConfirmTransactionFactory>[0];
         const send = sendAndConfirmTransactionFactory(sendConfig);
         await send(signed, { commitment: args.commitment ?? "confirmed" });
 
