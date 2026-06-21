@@ -1,8 +1,12 @@
 # Bastion
 
-A **policy firewall for Solana**. Bastion lets a wallet owner delegate _narrowly scoped_, _short-lived_, _revocable_ authority to an AI agent, trading bot, or dApp — and have every action that delegate takes enforced on-chain by a composable set of policy accounts.
+A **policy firewall for Solana**. Bastion lets a wallet owner delegate _narrowly scoped_, _short-lived_, _revocable_ authority to an AI agent, trading bot, or dApp, and have every action that delegate takes enforced on-chain by a composable set of policy accounts.
 
 The agent never sees the owner's private key. It holds a disposable **session key** and a shippable **operator credential**. Every wrapped transaction routes through the Bastion program, which validates the request against the policies the owner attached, charges windowed counters / spend caps, and only then CPIs into the target program via a **delegate PDA** (which has no private key — only the program can make it sign).
+
+---
+
+**Devnet Program ID:** `GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1`
 
 ---
 

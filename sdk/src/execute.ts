@@ -18,11 +18,7 @@ import {
     type Commitment,
     type Instruction,
     type ReadonlyUint8Array,
-    type Rpc,
-    type RpcSubscriptions,
     type Signature,
-    type SolanaRpcApi,
-    type SolanaRpcSubscriptionsApi,
     type TransactionSigner,
 } from "@solana/kit";
 import {
@@ -31,6 +27,7 @@ import {
     type Policy,
     COMPUTE_BUDGET_ID,
 } from "./generated";
+import type { BastionRpc, BastionRpcSubscriptions } from "./config";
 import { wrapSendError } from "./errors";
 
 const BASTION_FLAG_SIGNER = 0b01;
@@ -225,7 +222,7 @@ export function estimateComputeUnits(
 }
 
 export async function planExecution(
-    rpc: Rpc<SolanaRpcApi>,
+    rpc: BastionRpc,
     policyAddresses: readonly Address[],
     args: OuterIxArgs,
     legCount = 1
@@ -272,8 +269,8 @@ export async function planExecution(
 }
 
 export interface SendArgs {
-    rpc: Rpc<SolanaRpcApi>;
-    rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
+    rpc: BastionRpc;
+    rpcSubscriptions: BastionRpcSubscriptions;
     feePayer: TransactionSigner;
     instructions: readonly Instruction[];
     commitment?: Commitment;
@@ -305,10 +302,11 @@ export async function sendTx(args: SendArgs): Promise<Signature> {
 
         const signed = await signTransactionMessageWithSigners(message);
         assertIsTransactionWithBlockhashLifetime(signed);
-        const send = sendAndConfirmTransactionFactory({
+        const sendConfig = {
             rpc: args.rpc,
             rpcSubscriptions: args.rpcSubscriptions,
-        });
+        } as unknown as Parameters<typeof sendAndConfirmTransactionFactory>[0];
+        const send = sendAndConfirmTransactionFactory(sendConfig);
         await send(signed, { commitment: args.commitment ?? "confirmed" });
 
         return getSignatureFromTransaction(signed);

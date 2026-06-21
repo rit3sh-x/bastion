@@ -1,0 +1,10 @@
+{
+    "extends": "@workspace/typescript-config/library.json",
+    "compilerOptions": {
+        "rootDir": "./src",
+        "noEmit": false,
+        "types": ["node"]
+    },
+    "include": ["src"],
+    "exclude": ["node_modules", "dist", "eslint.config.js"]
+}

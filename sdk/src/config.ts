@@ -1,12 +1,22 @@
-import type { Address, Commitment, Rpc, SolanaRpcApi } from "@solana/kit";
+import type {
+    Address,
+    Commitment,
+    createSolanaRpc,
+    createSolanaRpcSubscriptions,
+} from "@solana/kit";
 import { BASTION_PROGRAM_ADDRESS } from "./generated";
 import { BastionSdkError } from "./errors";
 import type { BastionHooks } from "./hooks";
 import type { LoggerConfig } from "./logger";
 import type { WalletSigner } from "./wallet";
 
+export type BastionRpc = ReturnType<typeof createSolanaRpc>;
+export type BastionRpcSubscriptions = ReturnType<
+    typeof createSolanaRpcSubscriptions
+>;
+
 export interface BastionConfig {
-    rpc: Rpc<SolanaRpcApi>;
+    rpc: BastionRpc;
     wallet: WalletSigner;
     programId?: Address;
     commitment?: Commitment;
