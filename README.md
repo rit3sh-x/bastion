@@ -8,6 +8,10 @@ The agent never sees the owner's private key. It holds a disposable **session ke
 
 **Devnet Program ID:** `GkCMDTvNwvAusUk5u28mXQ8c8A4zs1y4hbbEcVZciSm1`
 
+**Devnet Test Results**
+
+![Devnet tests passing](assets/devnet-tests.png)
+
 ---
 
 ## What it gives you

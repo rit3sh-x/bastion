@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { config as dotenv } from "dotenv";
 
 import {
     createKeyPairSignerFromBytes,
@@ -16,7 +17,14 @@ import {
 } from "@solana/kit";
 import { createHolderClient, type HolderClient } from "bastion";
 
-loadEnvFiles();
+const here = dirname(fileURLToPath(import.meta.url));
+const packageDir = resolve(here, "..");
+
+dotenv({
+    path: resolve(packageDir, ".env"),
+    override: false,
+    quiet: true,
+});
 
 export const DEVNET_E2E_ENABLED = process.env.BASTION_DEVNET_E2E === "1";
 export const RPC_URL = process.env.RPC_URL ?? "https://api.devnet.solana.com";
@@ -77,38 +85,6 @@ async function loadOwner(): Promise<KeyPairSigner> {
         throw new Error(`${keypairPath} must contain a 64-byte keypair array`);
     }
     return createKeyPairSignerFromBytes(new Uint8Array(parsed as number[]));
-}
-
-function loadEnvFiles(): void {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const packageDir = resolve(here, "..");
-    const repoRoot = resolve(packageDir, "../..");
-
-    for (const path of [
-        resolve(repoRoot, ".env"),
-        resolve(packageDir, ".env"),
-    ]) {
-        if (!existsSync(path)) continue;
-        for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
-            const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(
-                line
-            );
-            const [, key, rawValue] = match ?? [];
-            if (!key || process.env[key] !== undefined) continue;
-            process.env[key] = stripQuotes(rawValue ?? "");
-        }
-    }
-}
-
-function stripQuotes(value: string): string {
-    const trimmed = value.trim();
-    if (
-        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-        (trimmed.startsWith("'") && trimmed.endsWith("'"))
-    ) {
-        return trimmed.slice(1, -1);
-    }
-    return trimmed;
 }
 
 function expandHome(path: string): string {
