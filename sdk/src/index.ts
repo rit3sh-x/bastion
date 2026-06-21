@@ -13,6 +13,8 @@ export type {
     PluginContext,
     BastionHookKey,
     ResolvedBastionConfig,
+    BastionRpc,
+    BastionRpcSubscriptions,
 } from "./config";
 
 export type {
@@ -63,7 +65,7 @@ export type {
     CreateOperatorClientOptions,
 } from "./operator";
 
-export { wrapInner, wrapInnerBatch, planExecution } from "./execute";
+export { wrapInner, wrapInnerBatch, planExecution, sendTx } from "./execute";
 export type { WrappedInner, WrappedBatch, WrappedLeg } from "./execute";
 
 export {

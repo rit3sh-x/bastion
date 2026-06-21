@@ -1,17 +1,7 @@
 import {
     AccountRole,
-    appendTransactionMessageInstructions,
-    assertIsTransactionMessageWithinSizeLimit,
-    assertIsTransactionWithBlockhashLifetime,
-    createTransactionMessage,
     generateKeyPairSigner,
     getAddressEncoder,
-    getSignatureFromTransaction,
-    pipe,
-    sendAndConfirmTransactionFactory,
-    setTransactionMessageFeePayerSigner,
-    setTransactionMessageLifetimeUsingBlockhash,
-    signTransactionMessageWithSigners,
     type Address,
     type Instruction,
     type Signature,
@@ -23,6 +13,7 @@ import {
     associatedTokenAddress,
     buildCreateAtaIdempotentIx,
 } from "bastion/token";
+import { sendTx } from "bastion";
 
 import type { DevnetContext } from "./env";
 
@@ -37,26 +28,15 @@ export async function sendInstructions(
     ctx: DevnetContext,
     instructions: readonly Instruction[]
 ): Promise<Signature> {
-    const latestBlockhash = (await ctx.rpc.getLatestBlockhash().send()).value;
-    const tx = pipe(
-        createTransactionMessage({ version: 0 }),
-        (m) => setTransactionMessageFeePayerSigner(ctx.owner, m),
-        (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
-        (m) => appendTransactionMessageInstructions([...instructions], m)
-    );
-    assertIsTransactionMessageWithinSizeLimit(tx);
-    const signed = await signTransactionMessageWithSigners(tx);
-    assertIsTransactionWithBlockhashLifetime(signed);
-    const sendAndConfirmConfig: Parameters<
-        typeof sendAndConfirmTransactionFactory
-    >[0] = {
+    const sig = await sendTx({
         rpc: ctx.rpc,
         rpcSubscriptions: ctx.rpcSubscriptions,
-    };
-    const sendAndConfirm =
-        sendAndConfirmTransactionFactory(sendAndConfirmConfig);
-    await sendAndConfirm(signed, { commitment: "confirmed" });
-    return getSignatureFromTransaction(signed);
+        feePayer: ctx.owner,
+        instructions,
+        commitment: "confirmed",
+    });
+
+    return sig;
 }
 
 export async function solBalance(
