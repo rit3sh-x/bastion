@@ -1,56 +1,36 @@
 import { generateKeyPairSigner } from "@solana/kit";
-import { createOperatorClient, pda } from "bastion";
 import { ProgramAllowlist, TokenAuthorityGuard } from "bastion/policies";
 import { TOKEN_PROGRAM_ADDRESS, buildApproveIx } from "bastion/token";
 import { sol, tokens } from "bastion/units";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 
-import {
-    DEVNET_E2E_ENABLED,
-    createDevnetContext,
-    type DevnetContext,
-} from "./env";
+import type { DevnetContext } from "./env";
+import { bootstrap, run, startSession } from "./harness";
 import {
     SYSTEM_PROGRAM_ADDRESS,
     createMintWithOwnerAta,
-    sendInstructions,
-    signedSystemTransferIx,
-    solBalance,
     systemTransferIx,
 } from "./tx";
 
-const run = DEVNET_E2E_ENABLED ? describe.sequential : describe.skip;
 const DECIMALS = 6;
 
 run("Bastion contract guard devnet e2e", () => {
     let ctx: DevnetContext;
 
     beforeAll(async () => {
-        ctx = await createDevnetContext();
-        expect(await solBalance(ctx, ctx.owner.address)).toBeGreaterThan(
-            sol(0.08)
-        );
+        ctx = await bootstrap(sol(0.08));
     });
 
     it("requires the pinned manifest to be supplied on execute", async () => {
-        const opened = await ctx.holder.openSession({
-            expiry: { secsFromNow: 3_600 },
+        const { handle, operator, delegate } = await startSession(ctx, [], {
+            fund: sol(0.01),
         });
         const signed = await ctx.holder.signManifest([
             ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
         ]);
-        await opened.handle.pinManifest(signed.manifestHash);
+        await handle.pinManifest(signed.manifestHash);
 
-        const operator = await createOperatorClient(opened.operator);
-        const [delegate] = await pda.delegate(
-            ctx.owner.address,
-            operator.sessionKey
-        );
         const recipient = await generateKeyPairSigner();
-
-        await sendInstructions(ctx, [
-            signedSystemTransferIx(ctx.owner, delegate, sol(0.01)),
-        ]);
 
         await expect(
             operator.execute(
@@ -77,8 +57,8 @@ run("Bastion contract guard devnet e2e", () => {
             { feePayer: ctx.owner }
         );
 
-        await opened.handle.revoke();
-        await opened.handle.sweep(ctx.owner.address);
+        await handle.revoke();
+        await handle.sweep(ctx.owner.address);
     });
 
     it("TokenAuthorityGuard rejects approve-style authority changes", async () => {
@@ -87,23 +67,15 @@ run("Bastion contract guard devnet e2e", () => {
             DECIMALS,
             tokens(2, DECIMALS)
         );
-        const opened = await ctx.holder.openSession({
-            expiry: { secsFromNow: 3_600 },
-            policies: [
+        const { handle, operator, delegate } = await startSession(
+            ctx,
+            [
                 ProgramAllowlist({ programs: [TOKEN_PROGRAM_ADDRESS] }),
                 TokenAuthorityGuard(),
             ],
-        });
-        const operator = await createOperatorClient(opened.operator);
-        const [delegate] = await pda.delegate(
-            ctx.owner.address,
-            operator.sessionKey
+            { fund: sol(0.005) }
         );
         const attemptedDelegate = await generateKeyPairSigner();
-
-        await sendInstructions(ctx, [
-            signedSystemTransferIx(ctx.owner, delegate, sol(0.005)),
-        ]);
 
         await expect(
             operator.execute(
@@ -119,7 +91,7 @@ run("Bastion contract guard devnet e2e", () => {
             )
         ).rejects.toThrow();
 
-        await opened.handle.revoke();
-        await opened.handle.sweep(ctx.owner.address);
+        await handle.revoke();
+        await handle.sweep(ctx.owner.address);
     });
 });
