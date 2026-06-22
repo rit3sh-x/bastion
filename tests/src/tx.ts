@@ -20,6 +20,9 @@ import type { DevnetContext } from "./env";
 export const SYSTEM_PROGRAM_ADDRESS =
     "11111111111111111111111111111111" as Address;
 
+export const MEMO_PROGRAM_ADDRESS =
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" as Address;
+
 const RENT_SYSVAR_ADDRESS =
     "SysvarRent111111111111111111111111111111111" as Address;
 const MINT_ACCOUNT_SIZE = 82n;
@@ -44,6 +47,16 @@ export async function solBalance(
     address: Address
 ): Promise<bigint> {
     return (await ctx.rpc.getBalance(address).send()).value;
+}
+
+export async function fundDelegate(
+    ctx: DevnetContext,
+    delegate: Address,
+    lamports: bigint
+): Promise<Signature> {
+    return sendInstructions(ctx, [
+        signedSystemTransferIx(ctx.owner, delegate, lamports),
+    ]);
 }
 
 export async function tokenBalance(

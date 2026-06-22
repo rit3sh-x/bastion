@@ -1,6 +1,14 @@
 {
     "$schema": "https://turbo.build/schema.json",
     "ui": "tui",
+    "globalEnv": [
+        "BASTION_DEVNET_E2E",
+        "RPC_URL",
+        "RPC_MAX_RPS",
+        "RPC_MAX_RETRIES",
+        "OWNER_SECRET",
+        "OWNER_KEYPAIR"
+    ],
     "tasks": {
         "build": {
             "dependsOn": ["^build"],

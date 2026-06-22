@@ -6,6 +6,7 @@
     "description": "Bastion devnet end-to-end tests",
     "scripts": {
         "typecheck": "tsc --noEmit",
+        "lint": "eslint .",
         "test:watch": "vitest src",
         "test:devnet": "BASTION_DEVNET_E2E=1 vitest run src"
     },
@@ -13,11 +14,14 @@
         "@solana/kit": "^6.9.0",
         "@solana/program-client-core": "^6.4.0",
         "bastion": "workspace:*",
-        "dotenv": "^17.4.2"
+        "dotenv": "^17.4.2",
+        "p-throttle": "^8.1.0"
     },
     "devDependencies": {
         "@types/node": "^25.9.1",
+        "@workspace/eslint-config": "workspace:*",
         "@workspace/typescript-config": "workspace:*",
+        "eslint": "^9.32.0",
         "typescript": "^6.0.0",
         "vitest": "^4.1.0"
     }

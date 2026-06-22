@@ -1,5 +1,4 @@
 import { generateKeyPairSigner } from "@solana/kit";
-import { createOperatorClient, pda } from "bastion";
 import {
     AmountPerCall,
     MintAllowlist,
@@ -10,31 +9,19 @@ import {
 } from "bastion/policies";
 import { TOKEN_PROGRAM_ADDRESS, buildTokenTransferIx } from "bastion/token";
 import { days, sol, tokens } from "bastion/units";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 
-import {
-    DEVNET_E2E_ENABLED,
-    createDevnetContext,
-    type DevnetContext,
-} from "./env";
-import {
-    createMintWithOwnerAta,
-    createTokenAta,
-    solBalance,
-    tokenBalance,
-} from "./tx";
+import type { DevnetContext } from "./env";
+import { bootstrap, expectProgramRejection, run, withSession } from "./harness";
+import { createMintWithOwnerAta, createTokenAta, tokenBalance } from "./tx";
 
-const run = DEVNET_E2E_ENABLED ? describe.sequential : describe.skip;
 const DECIMALS = 6;
 
 run("Bastion SPL allowance devnet e2e", () => {
     let ctx: DevnetContext;
 
     beforeAll(async () => {
-        ctx = await createDevnetContext();
-        expect(await solBalance(ctx, ctx.owner.address)).toBeGreaterThan(
-            sol(0.08)
-        );
+        ctx = await bootstrap(sol(0.08));
     });
 
     it("mints SPL tokens and spends an approved owner allowance through the operator", async () => {
@@ -46,9 +33,9 @@ run("Bastion SPL allowance devnet e2e", () => {
         const recipient = await generateKeyPairSigner();
         const recipientAta = await createTokenAta(ctx, recipient.address, mint);
 
-        const opened = await ctx.holder.openSession({
-            expiry: { secsFromNow: 3_600 },
-            policies: [
+        await withSession(
+            ctx,
+            [
                 ProgramAllowlist({ programs: [TOKEN_PROGRAM_ADDRESS] }),
                 MintAllowlist({ mints: [mint] }),
                 SpendCap({
@@ -61,46 +48,37 @@ run("Bastion SPL allowance devnet e2e", () => {
                     max: tokens(2, DECIMALS),
                 }),
             ],
-            allowance: {
-                mint,
-                amount: tokens(5, DECIMALS),
-            },
-        });
-        const operator = await createOperatorClient(opened.operator);
-        const [delegate] = await pda.delegate(
-            ctx.owner.address,
-            operator.sessionKey
+            { allowance: { mint, amount: tokens(5, DECIMALS) } },
+            async ({ operator, delegate }) => {
+                const before = await tokenBalance(ctx, recipientAta);
+                await operator.execute(
+                    {
+                        inner: buildTokenTransferIx({
+                            source: ownerAta,
+                            dest: recipientAta,
+                            authority: delegate,
+                            amount: tokens(1, DECIMALS),
+                        }),
+                    },
+                    { feePayer: ctx.owner }
+                );
+                const after = await tokenBalance(ctx, recipientAta);
+                expect(after - before).toBe(tokens(1, DECIMALS));
+
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: buildTokenTransferIx({
+                                source: ownerAta,
+                                dest: recipientAta,
+                                authority: delegate,
+                                amount: tokens(3, DECIMALS),
+                            }),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+            }
         );
-
-        const before = await tokenBalance(ctx, recipientAta);
-        await operator.execute(
-            {
-                inner: buildTokenTransferIx({
-                    source: ownerAta,
-                    dest: recipientAta,
-                    authority: delegate,
-                    amount: tokens(1, DECIMALS),
-                }),
-            },
-            { feePayer: ctx.owner }
-        );
-        const after = await tokenBalance(ctx, recipientAta);
-        expect(after - before).toBe(tokens(1, DECIMALS));
-
-        await expect(
-            operator.execute(
-                {
-                    inner: buildTokenTransferIx({
-                        source: ownerAta,
-                        dest: recipientAta,
-                        authority: delegate,
-                        amount: tokens(3, DECIMALS),
-                    }),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        await opened.handle.revoke();
     });
 });

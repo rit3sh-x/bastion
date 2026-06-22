@@ -108,13 +108,22 @@ importers:
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
+      p-throttle:
+        specifier: ^8.1.0
+        version: 8.1.0
     devDependencies:
       '@types/node':
         specifier: ^25.9.1
         version: 25.9.1
+      '@workspace/eslint-config':
+        specifier: workspace:*
+        version: link:../tooling/eslint-config
       '@workspace/typescript-config':
         specifier: workspace:*
         version: link:../tooling/typescript-config
+      eslint:
+        specifier: ^9.32.0
+        version: 9.39.4
       typescript:
         specifier: ^6.0.0
         version: 6.0.3
@@ -1695,6 +1704,10 @@ packages:
   p-locate@5.0.0:
     resolution: {integrity: sha512-LaNjtRWUBY++zB5nE/NwcaoMylSPk+S+ZHNB1TzdbMJMny6dynpAGt7X/tl/QYq3TIeE6nxHppbo2LGymrG5Pw==}
     engines: {node: '>=10'}
+
+  p-throttle@8.1.0:
+    resolution: {integrity: sha512-c1wmXavsHZIC4g1OLhOsafK6jZSAeMo0Ap3yivj59PUcCkpacy5YgWdgIp/dB4vp1JZrfBSsPCR0YuADB+ENLQ==}
+    engines: {node: '>=20'}
 
   parent-module@1.0.1:
     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
@@ -3462,6 +3475,8 @@ snapshots:
   p-locate@5.0.0:
     dependencies:
       p-limit: 3.1.0
+
+  p-throttle@8.1.0: {}
 
   parent-module@1.0.1:
     dependencies:

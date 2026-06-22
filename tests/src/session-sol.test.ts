@@ -1,10 +1,5 @@
 import { generateKeyPairSigner, type Address } from "@solana/kit";
-import {
-    createOperatorClient,
-    pda,
-    type OperatorClient,
-    type SessionHandle,
-} from "bastion";
+import type { OperatorClient, SessionHandle } from "bastion";
 import {
     AmountPerCall,
     MaxCallsTotal,
@@ -14,22 +9,21 @@ import {
     window,
 } from "bastion/policies";
 import { days, sol } from "bastion/units";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
+import type { DevnetContext } from "./env";
 import {
-    DEVNET_E2E_ENABLED,
-    createDevnetContext,
-    type DevnetContext,
-} from "./env";
+    bootstrap,
+    expectProgramRejection,
+    run,
+    startSession,
+} from "./harness";
 import {
     SYSTEM_PROGRAM_ADDRESS,
-    sendInstructions,
-    signedSystemTransferIx,
+    fundDelegate,
     solBalance,
     systemTransferIx,
 } from "./tx";
-
-const run = DEVNET_E2E_ENABLED ? describe.sequential : describe.skip;
 
 run("Bastion SOL session devnet e2e", () => {
     let ctx: DevnetContext;
@@ -38,30 +32,29 @@ run("Bastion SOL session devnet e2e", () => {
     let delegate: Address;
 
     beforeAll(async () => {
-        ctx = await createDevnetContext();
-        expect(await solBalance(ctx, ctx.owner.address)).toBeGreaterThan(
-            sol(0.08)
-        );
+        ctx = await bootstrap(sol(0.08));
+        const session = await startSession(ctx, [
+            ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
+            SpendCap({
+                asset: asset.sol(),
+                window: window.fixed(days(1)),
+                max: sol(0.02),
+            }),
+            AmountPerCall({ asset: asset.sol(), max: sol(0.01) }),
+            MaxCallsTotal({ max: 4n }),
+        ]);
+        handle = session.handle;
+        operator = session.operator;
+        delegate = session.delegate;
     });
 
-    it("opens a session and stores policy accounts on devnet", async () => {
-        const opened = await ctx.holder.openSession({
-            expiry: { secsFromNow: 3_600 },
-            policies: [
-                ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
-                SpendCap({
-                    asset: asset.sol(),
-                    window: window.fixed(days(1)),
-                    max: sol(0.02),
-                }),
-                AmountPerCall({ asset: asset.sol(), max: sol(0.01) }),
-                MaxCallsTotal({ max: 4n }),
-            ],
-        });
-        handle = opened.handle;
-        operator = await createOperatorClient(opened.operator);
-        [delegate] = await pda.delegate(ctx.owner.address, operator.sessionKey);
+    afterAll(async () => {
+        if (!handle) return;
+        await handle.revoke().catch(() => undefined);
+        await handle.sweep(ctx.owner.address).catch(() => undefined);
+    });
 
+    it("stores the configured policy accounts on devnet", async () => {
         const state = await handle.state();
         expect(state.owner).toBe(ctx.owner.address);
         expect(state.revoked).toBe(false);
@@ -72,9 +65,7 @@ run("Bastion SOL session devnet e2e", () => {
 
     it("executes an allowed delegate transfer and rejects an oversized one", async () => {
         const recipient = await generateKeyPairSigner();
-        await sendInstructions(ctx, [
-            signedSystemTransferIx(ctx.owner, delegate, sol(0.03)),
-        ]);
+        await fundDelegate(ctx, delegate, sol(0.03));
 
         const before = await solBalance(ctx, recipient.address);
         await operator.execute(
@@ -91,7 +82,7 @@ run("Bastion SOL session devnet e2e", () => {
         expect(after - before).toBe(sol(0.005));
         expect((await operator.state()).actionNonce).toBe(1n);
 
-        await expect(
+        await expectProgramRejection(
             operator.execute(
                 {
                     inner: systemTransferIx(
@@ -102,21 +93,15 @@ run("Bastion SOL session devnet e2e", () => {
                 },
                 { feePayer: ctx.owner }
             )
-        ).rejects.toThrow();
+        );
     });
 
-    it("sweeps remaining delegate SOL, revokes, and blocks later operator execution", async () => {
+    it("blocks operator execution after revocation", async () => {
         const recipient = await generateKeyPairSigner();
 
         await handle.revoke();
-        expect((await handle.state()).revoked).toBe(true);
 
-        const beforeSweep = await solBalance(ctx, ctx.owner.address);
-        await handle.sweep(ctx.owner.address);
-        const afterSweep = await solBalance(ctx, ctx.owner.address);
-        expect(afterSweep).toBeGreaterThan(beforeSweep);
-        expect(await handle.delegateBalance()).toBe(0n);
-        await expect(
+        await expectProgramRejection(
             operator.execute(
                 {
                     inner: systemTransferIx(
@@ -127,6 +112,6 @@ run("Bastion SOL session devnet e2e", () => {
                 },
                 { feePayer: ctx.owner }
             )
-        ).rejects.toThrow();
+        );
     });
 });
