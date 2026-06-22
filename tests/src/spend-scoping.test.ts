@@ -6,10 +6,10 @@ import {
     window,
 } from "bastion/policies";
 import { days, sol } from "bastion/units";
-import { beforeAll, expect, it } from "vitest";
+import { beforeAll, it } from "vitest";
 
 import type { DevnetContext } from "./env";
-import { bootstrap, run, startSession } from "./harness";
+import { bootstrap, expectProgramRejection, run, withSession } from "./harness";
 import { SYSTEM_PROGRAM_ADDRESS, systemTransferIx } from "./tx";
 
 run("Bastion spend scoping devnet e2e", () => {
@@ -21,7 +21,7 @@ run("Bastion spend scoping devnet e2e", () => {
 
     it("PerCounterpartyCap limits lifetime spend to one receiver but spares others", async () => {
         const capped = await generateKeyPairSigner();
-        const { handle, operator, delegate } = await startSession(
+        await withSession(
             ctx,
             [
                 ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
@@ -30,39 +30,49 @@ run("Bastion spend scoping devnet e2e", () => {
                     max: sol(0.01),
                 }),
             ],
-            { fund: sol(0.03) }
+            { fund: sol(0.03) },
+            async ({ operator, delegate }) => {
+                await operator.execute(
+                    {
+                        inner: systemTransferIx(
+                            delegate,
+                            capped.address,
+                            sol(0.006)
+                        ),
+                    },
+                    { feePayer: ctx.owner }
+                );
+
+                const other = await generateKeyPairSigner();
+                await operator.execute(
+                    {
+                        inner: systemTransferIx(
+                            delegate,
+                            other.address,
+                            sol(0.006)
+                        ),
+                    },
+                    { feePayer: ctx.owner }
+                );
+
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: systemTransferIx(
+                                delegate,
+                                capped.address,
+                                sol(0.006)
+                            ),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+            }
         );
-
-        await operator.execute(
-            { inner: systemTransferIx(delegate, capped.address, sol(0.006)) },
-            { feePayer: ctx.owner }
-        );
-
-        const other = await generateKeyPairSigner();
-        await operator.execute(
-            { inner: systemTransferIx(delegate, other.address, sol(0.006)) },
-            { feePayer: ctx.owner }
-        );
-
-        await expect(
-            operator.execute(
-                {
-                    inner: systemTransferIx(
-                        delegate,
-                        capped.address,
-                        sol(0.006)
-                    ),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        await handle.revoke();
-        await handle.sweep(ctx.owner.address);
     });
 
     it("PerProgramSpendCap limits spend routed through a program within the window", async () => {
-        const { handle, operator, delegate } = await startSession(
+        await withSession(
             ctx,
             [
                 ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
@@ -72,30 +82,34 @@ run("Bastion spend scoping devnet e2e", () => {
                     max: sol(0.01),
                 }),
             ],
-            { fund: sol(0.03) }
+            { fund: sol(0.03) },
+            async ({ operator, delegate }) => {
+                const first = await generateKeyPairSigner();
+                await operator.execute(
+                    {
+                        inner: systemTransferIx(
+                            delegate,
+                            first.address,
+                            sol(0.006)
+                        ),
+                    },
+                    { feePayer: ctx.owner }
+                );
+
+                const second = await generateKeyPairSigner();
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: systemTransferIx(
+                                delegate,
+                                second.address,
+                                sol(0.006)
+                            ),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+            }
         );
-
-        const first = await generateKeyPairSigner();
-        await operator.execute(
-            { inner: systemTransferIx(delegate, first.address, sol(0.006)) },
-            { feePayer: ctx.owner }
-        );
-
-        const second = await generateKeyPairSigner();
-        await expect(
-            operator.execute(
-                {
-                    inner: systemTransferIx(
-                        delegate,
-                        second.address,
-                        sol(0.006)
-                    ),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        await handle.revoke();
-        await handle.sweep(ctx.owner.address);
     });
 });

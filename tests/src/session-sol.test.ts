@@ -9,10 +9,15 @@ import {
     window,
 } from "bastion/policies";
 import { days, sol } from "bastion/units";
-import { beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
 import type { DevnetContext } from "./env";
-import { bootstrap, run, startSession } from "./harness";
+import {
+    bootstrap,
+    expectProgramRejection,
+    run,
+    startSession,
+} from "./harness";
 import {
     SYSTEM_PROGRAM_ADDRESS,
     fundDelegate,
@@ -28,9 +33,6 @@ run("Bastion SOL session devnet e2e", () => {
 
     beforeAll(async () => {
         ctx = await bootstrap(sol(0.08));
-    });
-
-    it("opens a session and stores policy accounts on devnet", async () => {
         const session = await startSession(ctx, [
             ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
             SpendCap({
@@ -44,7 +46,15 @@ run("Bastion SOL session devnet e2e", () => {
         handle = session.handle;
         operator = session.operator;
         delegate = session.delegate;
+    });
 
+    afterAll(async () => {
+        if (!handle) return;
+        await handle.revoke().catch(() => undefined);
+        await handle.sweep(ctx.owner.address).catch(() => undefined);
+    });
+
+    it("stores the configured policy accounts on devnet", async () => {
         const state = await handle.state();
         expect(state.owner).toBe(ctx.owner.address);
         expect(state.revoked).toBe(false);
@@ -72,7 +82,7 @@ run("Bastion SOL session devnet e2e", () => {
         expect(after - before).toBe(sol(0.005));
         expect((await operator.state()).actionNonce).toBe(1n);
 
-        await expect(
+        await expectProgramRejection(
             operator.execute(
                 {
                     inner: systemTransferIx(
@@ -83,15 +93,15 @@ run("Bastion SOL session devnet e2e", () => {
                 },
                 { feePayer: ctx.owner }
             )
-        ).rejects.toThrow();
+        );
     });
 
-    it("revokes the session, blocks later operator execution, then sweeps", async () => {
+    it("blocks operator execution after revocation", async () => {
         const recipient = await generateKeyPairSigner();
 
         await handle.revoke();
 
-        await expect(
+        await expectProgramRejection(
             operator.execute(
                 {
                     inner: systemTransferIx(
@@ -102,8 +112,6 @@ run("Bastion SOL session devnet e2e", () => {
                 },
                 { feePayer: ctx.owner }
             )
-        ).rejects.toThrow();
-
-        await handle.sweep(ctx.owner.address);
+        );
     });
 });

@@ -4,8 +4,14 @@ declare global {
     var __bastionRpcThrottleInstalled: boolean | undefined;
 }
 
-const MAX_RPS = Math.max(1, Number(process.env.RPC_MAX_RPS ?? "8"));
-const MAX_RETRIES = Math.max(0, Number(process.env.RPC_MAX_RETRIES ?? "8"));
+function envInt(name: string, fallback: number, min: number): number {
+    const raw = process.env[name];
+    const parsed = raw === undefined ? fallback : Number(raw);
+    return Number.isFinite(parsed) ? Math.max(min, parsed) : fallback;
+}
+
+const MAX_RPS = envInt("RPC_MAX_RPS", 8, 1);
+const MAX_RETRIES = envInt("RPC_MAX_RETRIES", 8, 0);
 
 const realFetch = globalThis.fetch.bind(globalThis);
 const sleep = (ms: number): Promise<void> =>

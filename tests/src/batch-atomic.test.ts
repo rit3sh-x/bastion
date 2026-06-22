@@ -4,7 +4,7 @@ import { days, sol } from "bastion/units";
 import { beforeAll, expect, it } from "vitest";
 
 import type { DevnetContext } from "./env";
-import { bootstrap, run, startSession } from "./harness";
+import { bootstrap, expectProgramRejection, run, withSession } from "./harness";
 import { SYSTEM_PROGRAM_ADDRESS, solBalance, systemTransferIx } from "./tx";
 
 run("Bastion batch execution devnet e2e", () => {
@@ -15,7 +15,7 @@ run("Bastion batch execution devnet e2e", () => {
     });
 
     it("settles a multi-leg batch atomically and reverts the whole batch past a cap", async () => {
-        const { handle, operator, delegate } = await startSession(
+        await withSession(
             ctx,
             [
                 ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
@@ -25,41 +25,47 @@ run("Bastion batch execution devnet e2e", () => {
                     max: sol(0.01),
                 }),
             ],
-            { fund: sol(0.04) }
+            { fund: sol(0.04) },
+            async ({ operator, delegate }) => {
+                const a = await generateKeyPairSigner();
+                const b = await generateKeyPairSigner();
+                await operator.executeBatch(
+                    {
+                        inners: [
+                            systemTransferIx(delegate, a.address, sol(0.004)),
+                            systemTransferIx(delegate, b.address, sol(0.004)),
+                        ],
+                    },
+                    { feePayer: ctx.owner }
+                );
+                expect(await solBalance(ctx, a.address)).toBe(sol(0.004));
+                expect(await solBalance(ctx, b.address)).toBe(sol(0.004));
+
+                const c = await generateKeyPairSigner();
+                const d = await generateKeyPairSigner();
+                await expectProgramRejection(
+                    operator.executeBatch(
+                        {
+                            inners: [
+                                systemTransferIx(
+                                    delegate,
+                                    c.address,
+                                    sol(0.004)
+                                ),
+                                systemTransferIx(
+                                    delegate,
+                                    d.address,
+                                    sol(0.004)
+                                ),
+                            ],
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+
+                expect(await solBalance(ctx, c.address)).toBe(0n);
+                expect(await solBalance(ctx, d.address)).toBe(0n);
+            }
         );
-
-        const a = await generateKeyPairSigner();
-        const b = await generateKeyPairSigner();
-        await operator.executeBatch(
-            {
-                inners: [
-                    systemTransferIx(delegate, a.address, sol(0.004)),
-                    systemTransferIx(delegate, b.address, sol(0.004)),
-                ],
-            },
-            { feePayer: ctx.owner }
-        );
-        expect(await solBalance(ctx, a.address)).toBe(sol(0.004));
-        expect(await solBalance(ctx, b.address)).toBe(sol(0.004));
-
-        const c = await generateKeyPairSigner();
-        const d = await generateKeyPairSigner();
-        await expect(
-            operator.executeBatch(
-                {
-                    inners: [
-                        systemTransferIx(delegate, c.address, sol(0.004)),
-                        systemTransferIx(delegate, d.address, sol(0.004)),
-                    ],
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        expect(await solBalance(ctx, c.address)).toBe(0n);
-        expect(await solBalance(ctx, d.address)).toBe(0n);
-
-        await handle.revoke();
-        await handle.sweep(ctx.owner.address);
     });
 });

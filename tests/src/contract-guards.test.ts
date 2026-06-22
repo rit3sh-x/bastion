@@ -2,10 +2,10 @@ import { generateKeyPairSigner } from "@solana/kit";
 import { ProgramAllowlist, TokenAuthorityGuard } from "bastion/policies";
 import { TOKEN_PROGRAM_ADDRESS, buildApproveIx } from "bastion/token";
 import { sol, tokens } from "bastion/units";
-import { beforeAll, expect, it } from "vitest";
+import { beforeAll, it } from "vitest";
 
 import type { DevnetContext } from "./env";
-import { bootstrap, run, startSession } from "./harness";
+import { bootstrap, expectProgramRejection, run, withSession } from "./harness";
 import {
     SYSTEM_PROGRAM_ADDRESS,
     createMintWithOwnerAta,
@@ -22,43 +22,44 @@ run("Bastion contract guard devnet e2e", () => {
     });
 
     it("requires the pinned manifest to be supplied on execute", async () => {
-        const { handle, operator, delegate } = await startSession(ctx, [], {
-            fund: sol(0.01),
-        });
-        const signed = await ctx.holder.signManifest([
-            ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
-        ]);
-        await handle.pinManifest(signed.manifestHash);
+        await withSession(
+            ctx,
+            [],
+            { fund: sol(0.01) },
+            async ({ handle, operator, delegate }) => {
+                const signed = await ctx.holder.signManifest([
+                    ProgramAllowlist({ programs: [SYSTEM_PROGRAM_ADDRESS] }),
+                ]);
+                await handle.pinManifest(signed.manifestHash);
 
-        const recipient = await generateKeyPairSigner();
+                const recipient = await generateKeyPairSigner();
 
-        await expect(
-            operator.execute(
-                {
-                    inner: systemTransferIx(
-                        delegate,
-                        recipient.address,
-                        sol(0.001)
-                    ),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: systemTransferIx(
+                                delegate,
+                                recipient.address,
+                                sol(0.001)
+                            ),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
 
-        await operator.execute(
-            {
-                inner: systemTransferIx(
-                    delegate,
-                    recipient.address,
-                    sol(0.001)
-                ),
-                manifest: signed,
-            },
-            { feePayer: ctx.owner }
+                await operator.execute(
+                    {
+                        inner: systemTransferIx(
+                            delegate,
+                            recipient.address,
+                            sol(0.001)
+                        ),
+                        manifest: signed,
+                    },
+                    { feePayer: ctx.owner }
+                );
+            }
         );
-
-        await handle.revoke();
-        await handle.sweep(ctx.owner.address);
     });
 
     it("TokenAuthorityGuard rejects approve-style authority changes", async () => {
@@ -67,31 +68,29 @@ run("Bastion contract guard devnet e2e", () => {
             DECIMALS,
             tokens(2, DECIMALS)
         );
-        const { handle, operator, delegate } = await startSession(
+        await withSession(
             ctx,
             [
                 ProgramAllowlist({ programs: [TOKEN_PROGRAM_ADDRESS] }),
                 TokenAuthorityGuard(),
             ],
-            { fund: sol(0.005) }
+            { fund: sol(0.005) },
+            async ({ operator, delegate }) => {
+                const attemptedDelegate = await generateKeyPairSigner();
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: buildApproveIx({
+                                source: ownerAta,
+                                delegate: attemptedDelegate.address,
+                                owner: delegate,
+                                amount: tokens(1, DECIMALS),
+                            }),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+            }
         );
-        const attemptedDelegate = await generateKeyPairSigner();
-
-        await expect(
-            operator.execute(
-                {
-                    inner: buildApproveIx({
-                        source: ownerAta,
-                        delegate: attemptedDelegate.address,
-                        owner: delegate,
-                        amount: tokens(1, DECIMALS),
-                    }),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        await handle.revoke();
-        await handle.sweep(ctx.owner.address);
     });
 });

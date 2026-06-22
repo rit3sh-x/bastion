@@ -1,5 +1,6 @@
 import type { Address } from "@solana/kit";
 import {
+    BastionSdkError,
     createOperatorClient,
     pda,
     type OperatorClient,
@@ -23,7 +24,9 @@ export const run: SuiteRunner = DEVNET_E2E_ENABLED
 
 export async function bootstrap(minSol: bigint): Promise<DevnetContext> {
     const ctx = await createDevnetContext();
-    expect(await solBalance(ctx, ctx.owner.address)).toBeGreaterThan(minSol);
+    expect(await solBalance(ctx, ctx.owner.address)).toBeGreaterThanOrEqual(
+        minSol
+    );
     return ctx;
 }
 
@@ -33,14 +36,16 @@ export interface OpenedSession {
     delegate: Address;
 }
 
+export interface SessionOpts {
+    fund?: bigint;
+    expirySecs?: number;
+    allowance?: { mint: Address; amount: bigint };
+}
+
 export async function startSession(
     ctx: DevnetContext,
     policies: readonly PolicyDataArgs[],
-    opts: {
-        fund?: bigint;
-        expirySecs?: number;
-        allowance?: { mint: Address; amount: bigint };
-    } = {}
+    opts: SessionOpts = {}
 ): Promise<OpenedSession> {
     const opened = await ctx.holder.openSession({
         expiry: { secsFromNow: opts.expirySecs ?? 3_600 },
@@ -54,4 +59,39 @@ export async function startSession(
     );
     if (opts.fund) await fundDelegate(ctx, delegate, opts.fund);
     return { handle: opened.handle, operator, delegate };
+}
+
+export async function withSession(
+    ctx: DevnetContext,
+    policies: readonly PolicyDataArgs[],
+    opts: SessionOpts,
+    body: (session: OpenedSession) => Promise<void>
+): Promise<void> {
+    const session = await startSession(ctx, policies, opts);
+    try {
+        await body(session);
+    } finally {
+        await session.handle.revoke().catch(() => undefined);
+        await session.handle.sweep(ctx.owner.address).catch(() => undefined);
+    }
+}
+
+export async function expectProgramRejection(
+    promise: Promise<unknown>
+): Promise<BastionSdkError> {
+    let error: unknown;
+    try {
+        await promise;
+    } catch (caught) {
+        error = caught;
+    }
+    expect(error, "expected the call to be rejected").toBeInstanceOf(
+        BastionSdkError
+    );
+    const sdkError = error as BastionSdkError;
+    expect(
+        sdkError.onChainCode,
+        `expected an on-chain program rejection, got code ${sdkError.code}`
+    ).toBeDefined();
+    return sdkError;
 }

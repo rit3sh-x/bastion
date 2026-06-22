@@ -12,7 +12,7 @@ import { days, sol, tokens } from "bastion/units";
 import { beforeAll, expect, it } from "vitest";
 
 import type { DevnetContext } from "./env";
-import { bootstrap, run, startSession } from "./harness";
+import { bootstrap, expectProgramRejection, run, withSession } from "./harness";
 import { createMintWithOwnerAta, createTokenAta, tokenBalance } from "./tx";
 
 const DECIMALS = 6;
@@ -33,7 +33,7 @@ run("Bastion SPL allowance devnet e2e", () => {
         const recipient = await generateKeyPairSigner();
         const recipientAta = await createTokenAta(ctx, recipient.address, mint);
 
-        const { handle, operator, delegate } = await startSession(
+        await withSession(
             ctx,
             [
                 ProgramAllowlist({ programs: [TOKEN_PROGRAM_ADDRESS] }),
@@ -48,38 +48,37 @@ run("Bastion SPL allowance devnet e2e", () => {
                     max: tokens(2, DECIMALS),
                 }),
             ],
-            { allowance: { mint, amount: tokens(5, DECIMALS) } }
+            { allowance: { mint, amount: tokens(5, DECIMALS) } },
+            async ({ operator, delegate }) => {
+                const before = await tokenBalance(ctx, recipientAta);
+                await operator.execute(
+                    {
+                        inner: buildTokenTransferIx({
+                            source: ownerAta,
+                            dest: recipientAta,
+                            authority: delegate,
+                            amount: tokens(1, DECIMALS),
+                        }),
+                    },
+                    { feePayer: ctx.owner }
+                );
+                const after = await tokenBalance(ctx, recipientAta);
+                expect(after - before).toBe(tokens(1, DECIMALS));
+
+                await expectProgramRejection(
+                    operator.execute(
+                        {
+                            inner: buildTokenTransferIx({
+                                source: ownerAta,
+                                dest: recipientAta,
+                                authority: delegate,
+                                amount: tokens(3, DECIMALS),
+                            }),
+                        },
+                        { feePayer: ctx.owner }
+                    )
+                );
+            }
         );
-
-        const before = await tokenBalance(ctx, recipientAta);
-        await operator.execute(
-            {
-                inner: buildTokenTransferIx({
-                    source: ownerAta,
-                    dest: recipientAta,
-                    authority: delegate,
-                    amount: tokens(1, DECIMALS),
-                }),
-            },
-            { feePayer: ctx.owner }
-        );
-        const after = await tokenBalance(ctx, recipientAta);
-        expect(after - before).toBe(tokens(1, DECIMALS));
-
-        await expect(
-            operator.execute(
-                {
-                    inner: buildTokenTransferIx({
-                        source: ownerAta,
-                        dest: recipientAta,
-                        authority: delegate,
-                        amount: tokens(3, DECIMALS),
-                    }),
-                },
-                { feePayer: ctx.owner }
-            )
-        ).rejects.toThrow();
-
-        await handle.revoke();
     });
 });
