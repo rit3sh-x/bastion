@@ -1,10 +1,19 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { getBase58Encoder } from "@solana/kit";
+import {
+    AccountRole,
+    createSolanaRpc,
+    createSolanaRpcSubscriptions,
+    getBase58Encoder,
+    type Address,
+    type Instruction,
+} from "@solana/kit";
 import {
     createHolderClient,
     createOperatorClient,
     parseOperatorCredential,
+    pda,
+    sendTx,
     serializeOperatorCredential,
     sessionKeyFromSecret,
     type BastionHooks,
@@ -13,12 +22,22 @@ import {
     type OperatorCredential,
     type SessionHandle,
 } from "bastion";
-import { tokens } from "bastion/units";
+import {
+    associatedTokenAddress,
+    buildCreateAtaIdempotentIx,
+    buildTokenTransferIx,
+} from "bastion/token";
+import { sol, tokens } from "bastion/units";
 
-import type { Env } from "./env";
-import { buildPolicies, LIMITS, resolveSpendMode } from "./policies";
+import type { BotConfig } from "./config";
+import { buildPolicies, LIMITS } from "./policies";
 import { log, toolTrace, warn } from "./ui";
-import { loadOwnerSigner } from "./wallet";
+
+const DELEGATE_SOL = sol(5);
+const DELEGATE_TOKENS = 500;
+const SESSION_FEE_SOL = sol(1);
+
+const SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111" as Address;
 
 export interface AgentContext {
     handle: SessionHandle;
@@ -33,6 +52,25 @@ function hooks(): BastionHooks {
         error(ctx) {
             warn(`bastion:${ctx.op} → ${ctx.error.code}`);
         },
+    };
+}
+
+function systemTransferIx(
+    from: Address,
+    to: Address,
+    lamports: bigint
+): Instruction {
+    const data = new Uint8Array(12);
+    const view = new DataView(data.buffer);
+    view.setUint32(0, 2, true);
+    view.setBigUint64(4, lamports, true);
+    return {
+        programAddress: SYSTEM_PROGRAM_ADDRESS,
+        accounts: [
+            { address: from, role: AccountRole.WRITABLE_SIGNER },
+            { address: to, role: AccountRole.WRITABLE },
+        ],
+        data,
     };
 }
 
@@ -61,71 +99,76 @@ async function reuseExisting(
     return { handle, operator: await createOperatorClient(cred) };
 }
 
-export async function openSession(env: Env): Promise<AgentContext> {
-    const wallet = await loadOwnerSigner(env.ownerSecretB58);
-    log(`owner:   ${wallet.address}`);
+async function fundVault(cfg: BotConfig, sessionKey: Address): Promise<void> {
+    const rpc = createSolanaRpc(cfg.rpcUrl);
+    const rpcSubscriptions = createSolanaRpcSubscriptions(cfg.wsUrl);
+    const [delegate] = await pda.delegate(cfg.ownerAddress, sessionKey);
+
+    const ownerAta = await associatedTokenAddress({
+        owner: cfg.ownerAddress,
+        mint: cfg.mint,
+    });
+    const delegateAta = await associatedTokenAddress({
+        owner: delegate,
+        mint: cfg.mint,
+    });
+
+    await sendTx({
+        rpc,
+        rpcSubscriptions,
+        feePayer: cfg.owner,
+        commitment: "confirmed",
+        instructions: [
+            systemTransferIx(cfg.ownerAddress, delegate, DELEGATE_SOL),
+            systemTransferIx(cfg.ownerAddress, sessionKey, SESSION_FEE_SOL),
+            buildCreateAtaIdempotentIx({
+                payer: cfg.ownerAddress,
+                ata: delegateAta,
+                owner: delegate,
+                mint: cfg.mint,
+            }),
+            buildTokenTransferIx({
+                source: ownerAta,
+                dest: delegateAta,
+                authority: cfg.ownerAddress,
+                amount: tokens(DELEGATE_TOKENS, cfg.decimals),
+            }),
+        ],
+    });
+
+    log(
+        `funded vault → ${delegate}\n  ${Number(DELEGATE_SOL) / 1e9} SOL + ${DELEGATE_TOKENS} ${cfg.symbol}  (session key fees: ${Number(SESSION_FEE_SOL) / 1e9} SOL)\n`
+    );
+}
+
+export async function openSession(cfg: BotConfig): Promise<AgentContext> {
+    log(`owner:   ${cfg.ownerAddress}`);
 
     const holder = createHolderClient({
-        url: env.rpcUrl,
-        ...(env.wsUrl ? { wsUrl: env.wsUrl } : {}),
-        wallet,
+        url: cfg.rpcUrl,
+        wsUrl: cfg.wsUrl,
+        wallet: cfg.owner,
         hooks: hooks(),
         logger: { level: "warn" },
     });
 
-    const reused = await reuseExisting(holder, env.credPath);
+    const reused = await reuseExisting(holder, cfg.credPath);
     if (reused) {
-        await reportFunding(reused, env);
+        log(`reusing session ${reused.handle.pubkey}\n`);
         return reused;
     }
-
-    const mode = resolveSpendMode(env);
-    const policies = buildPolicies(mode);
-    const allowance = mode.mint
-        ? {
-              mint: mode.mint,
-              amount: tokens(env.allowanceTokens, mode.decimals),
-          }
-        : undefined;
 
     log("opening new session + attaching policies…");
     const { handle, operator: cred } = await holder.openSession({
         expiry: { secsFromNow: LIMITS.sessionDurationSecs },
-        policies,
-        ...(allowance ? { allowance } : {}),
+        policies: buildPolicies(cfg.mint, cfg.decimals),
     });
-    writeFileSync(env.credPath, serializeOperatorCredential(cred));
-    log(`${policies.length} policies attached (${mode.symbol} caps)`);
+    writeFileSync(cfg.credPath, serializeOperatorCredential(cred));
     log(`session: ${cred.sessionPda}`);
-    log(`operator credential (ship this) → ${env.credPath}`);
+    log(`operator credential → ${cfg.credPath}`);
 
-    const ctx: AgentContext = {
-        handle,
-        operator: await createOperatorClient(cred),
-    };
-    await reportFunding(ctx, env);
-    return ctx;
-}
+    const operator = await createOperatorClient(cred);
+    await fundVault(cfg, operator.sessionKey);
 
-async function reportFunding(ctx: AgentContext, env: Env): Promise<void> {
-    const mode = resolveSpendMode(env);
-    if (mode.mint) {
-        try {
-            const source = await ctx.handle.allowanceSource(mode.mint);
-            log(
-                `allowance mode: agent spends up to ${env.allowanceTokens} ${mode.symbol} from your ATA ${source}\n`
-            );
-        } catch (e) {
-            warn(
-                `allowanceSource lookup failed: ${
-                    e instanceof Error ? e.message : String(e)
-                }`
-            );
-        }
-    } else {
-        const bal = Number(await ctx.handle.delegateBalance()) / 1e9;
-        log(
-            `vault mode: delegate balance ${bal} SOL  (fund the delegate to enable spends)\n`
-        );
-    }
+    return { handle, operator };
 }

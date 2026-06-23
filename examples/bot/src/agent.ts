@@ -1,26 +1,25 @@
 import type Groq from "groq-sdk";
 
-import { LIMITS, type ActiveCaps } from "./policies";
+import { LIMITS } from "./policies";
 import type { ToolKit } from "./tools";
 
 type Msg = Groq.Chat.Completions.ChatCompletionMessageParam;
 
-function systemPrompt(caps: ActiveCaps): string {
-    const u = caps.unit;
+function systemPrompt(symbol: string): string {
     return [
-        "You are an autonomous trading agent operating a Solana wallet that is gated by Bastion — an on-chain policy firewall.",
-        `The spend asset is ${u}. In allowance mode the funds stay in the user's own wallet; the agent is granted a capped allowance and the delegate holds no funds.`,
-        "Every swap/buy you make is validated on-chain. You CANNOT exceed the limits; if you try, the tool returns ok:false with an errorCode (e.g. AmountPerCallExceeded, SpendCapExceeded, CooldownActive, MaxCallsExceeded). Read it, explain it plainly to the user, and adjust.",
+        "You are an autonomous agent operating a Solana wallet that is gated by Bastion — an on-chain policy firewall.",
+        `You move two assets out of a delegate vault: native SOL and an SPL token (${symbol}). The vault is pre-funded; you spend from it within hard on-chain caps.`,
+        "Every send is validated on-chain. You CANNOT exceed the limits; if you try, the tool returns ok:false with an errorCode (e.g. AmountPerCallExceeded, SpendCapExceeded, CooldownActive, MaxCallsExceeded). Read it, explain it plainly to the user, and adjust.",
         "",
         "Tools:",
-        "- get_portfolio(): current session state, policy count, spend asset, and (allowance mode) the owner's source token account.",
-        "- swap(from,to,amount): swap one asset for another.",
-        "- buy(token,amount): buy a token.",
+        "- get_status(): session state, policy count, and the vault's SOL + token balances.",
+        "- send_sol(amount, to): send `amount` SOL to the `to` pubkey.",
+        `- send_spl(amount, to): send \`amount\` ${symbol} tokens to the \`to\` pubkey.`,
         "- revoke(reason): permanent kill switch — confirm with the user first.",
         "",
-        `When the user says e.g. "swap 5 ${u} for USDC" or "buy BONK with 2 ${u}", map it to the right tool with the amount they gave (in whole ${u}). If they omit an amount, ask. Call get_portfolio when you need live state. Be concise.`,
+        `Map plain requests to a tool: "move 3 sol to <pubkey>" → send_sol(3, "<pubkey>"); "send 4 ${symbol} to <pubkey>" → send_spl(4, "<pubkey>"). Pass the recipient pubkey through verbatim. If the amount, asset, or recipient is missing, ask. Call get_status when you need live balances. Be concise.`,
         "",
-        `Current limits: ${caps.perTrade} ${u} per trade, ${caps.lifetime} ${u} lifetime cap, ${LIMITS.totalCalls} total actions, ${LIMITS.cooldownSecs}s cooldown between calls, session lasts ${LIMITS.sessionDurationSecs / 3600}h.`,
+        `Current caps — SOL: ${LIMITS.sol.perTrade}/send, ${LIMITS.sol.lifetime} daily. ${symbol}: ${LIMITS.token.perTrade}/send, ${LIMITS.token.lifetime} daily. ${LIMITS.totalCalls} total actions, ${LIMITS.cooldownSecs}s cooldown between sends, session lasts ${LIMITS.sessionDurationSecs / 3600}h.`,
     ].join("\n");
 }
 
@@ -32,9 +31,9 @@ export class Agent {
         private readonly model: string,
         private readonly tools: ToolKit,
         private readonly maxSteps: number,
-        caps: ActiveCaps
+        symbol: string
     ) {
-        this.messages = [{ role: "system", content: systemPrompt(caps) }];
+        this.messages = [{ role: "system", content: systemPrompt(symbol) }];
     }
 
     async chat(userInput: string): Promise<{ text: string; revoked: boolean }> {

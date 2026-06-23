@@ -1,4 +1,4 @@
-import { address, type Address } from "@solana/kit";
+import { type Address } from "@solana/kit";
 import {
     AmountPerCall,
     asset,
@@ -6,69 +6,49 @@ import {
     MaxCallsTotal,
     MaxComputeUnits,
     MaxPriorityFee,
+    ProgramAllowlist,
     SpendCap,
     window,
     type PolicyDataArgs,
 } from "bastion/policies";
 import { days, hours, microLamports, sol, tokens } from "bastion/units";
+import { TOKEN_PROGRAM_ADDRESS } from "bastion/token";
 
-import type { Env } from "./env";
+const SYSTEM_PROGRAM_ADDRESS = "11111111111111111111111111111111" as Address;
 
 export const LIMITS = {
     sol: { perTrade: 0.1, lifetime: 1 },
     token: { perTrade: 10, lifetime: 100 },
-    totalCalls: 10n,
+    totalCalls: 20n,
     sessionDurationSecs: hours(1),
     cooldownSecs: 5,
     cuLimit: 400_000,
     priorityFeeCap: microLamports(50_000),
 } as const;
 
-export interface SpendMode {
-    mint?: Address;
-    decimals: number;
-    symbol: string;
-}
-
-export function resolveSpendMode(env: Env): SpendMode {
-    if (env.mint) {
-        return {
-            mint: address(env.mint),
-            decimals: env.mintDecimals,
-            symbol: env.tokenSymbol,
-        };
-    }
-    return { decimals: 9, symbol: "SOL" };
-}
-
-export interface ActiveCaps {
-    perTrade: number;
-    lifetime: number;
-    unit: string;
-}
-
-export function activeCaps(mode: SpendMode): ActiveCaps {
-    const caps = mode.mint ? LIMITS.token : LIMITS.sol;
-    return {
-        perTrade: caps.perTrade,
-        lifetime: caps.lifetime,
-        unit: mode.symbol,
-    };
-}
-
-export function buildPolicies(mode: SpendMode): PolicyDataArgs[] {
-    const spendAsset = mode.mint ? asset.splToken(mode.mint) : asset.sol();
-    const toBase = (whole: number): bigint =>
-        mode.mint ? tokens(whole, mode.decimals) : sol(whole);
-    const caps = mode.mint ? LIMITS.token : LIMITS.sol;
-
+export function buildPolicies(
+    mint: Address,
+    decimals: number
+): PolicyDataArgs[] {
     return [
-        SpendCap({
-            asset: spendAsset,
-            window: window.fixed(days(1)),
-            max: toBase(caps.lifetime),
+        ProgramAllowlist({
+            programs: [SYSTEM_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS],
         }),
-        AmountPerCall({ asset: spendAsset, max: toBase(caps.perTrade) }),
+        SpendCap({
+            asset: asset.sol(),
+            window: window.fixed(days(1)),
+            max: sol(LIMITS.sol.lifetime),
+        }),
+        AmountPerCall({ asset: asset.sol(), max: sol(LIMITS.sol.perTrade) }),
+        SpendCap({
+            asset: asset.splToken(mint),
+            window: window.fixed(days(1)),
+            max: tokens(LIMITS.token.lifetime, decimals),
+        }),
+        AmountPerCall({
+            asset: asset.splToken(mint),
+            max: tokens(LIMITS.token.perTrade, decimals),
+        }),
         MaxCallsTotal({ max: LIMITS.totalCalls }),
         CooldownPeriod({ secs: LIMITS.cooldownSecs }),
         MaxPriorityFee({ maxMicroLamports: LIMITS.priorityFeeCap }),

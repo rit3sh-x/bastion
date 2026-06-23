@@ -3,12 +3,11 @@
     "private": true,
     "type": "module",
     "version": "0.0.0",
-    "description": "LLM trading bot",
+    "description": "Bastion-gated agent CLI (Groq)",
     "scripts": {
         "typecheck": "tsc --noEmit",
-        "dev": "tsx --env-file=.env --env-file-if-exists=.env src/index.ts",
         "demo": "tsx --env-file-if-exists=.env src/index.ts",
-        "demo:live": "tsx --env-file-if-exists=.env src/demo.ts",
+        "provision": "bash ./scripts/setup.sh",
         "demo:e2e": "tsx --env-file-if-exists=.env scripts/e2e-live.ts"
     },
     "dependencies": {
