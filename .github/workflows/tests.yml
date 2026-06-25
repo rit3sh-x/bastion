@@ -16,7 +16,7 @@ jobs:
         name: Build + Rust tests (unit + LiteSVM)
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
             - name: Install Rust
               uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e # 1.89.0
@@ -26,7 +26,7 @@ jobs:
 
             - name: Cache Solana CLI
               id: solana-cache
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: ~/.local/share/solana
                   key: solana-${{ runner.os }}-3.1.14
@@ -42,7 +42,7 @@ jobs:
 
             - name: Cache AVM + Anchor
               id: anchor-cache
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: |
                       ~/.avm
@@ -89,7 +89,7 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
             - name: Download program artifact
               uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -114,7 +114,7 @@ jobs:
                   echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
             - name: Cache pnpm store
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
                   key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -122,7 +122,7 @@ jobs:
                       pnpm-store-${{ runner.os }}-
 
             - name: Cache turbo
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: .turbo
                   key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json', '**/package.json') }}
@@ -149,7 +149,7 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
             - name: Download program artifact
               uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -159,7 +159,7 @@ jobs:
 
             - name: Cache Solana CLI
               id: solana-cache
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: ~/.local/share/solana
                   key: solana-${{ runner.os }}-3.1.14
@@ -190,7 +190,7 @@ jobs:
                   echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
             - name: Cache pnpm store
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
                   key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -198,7 +198,7 @@ jobs:
                       pnpm-store-${{ runner.os }}-
 
             - name: Cache turbo
-              uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+              uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
               with:
                   path: .turbo
                   key: turbo-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json', '**/package.json') }}
